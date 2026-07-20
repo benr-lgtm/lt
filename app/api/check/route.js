@@ -3,22 +3,28 @@ import {
   getVehicleGpsByName,
   hasSamsaraToken,
   normalizeTruck,
+  tzFromCoords,
   localToIso,
   formatEta,
 } from "../../../lib/samsara";
 import { geocode, drivingEtaSeconds } from "../../../lib/maps";
-import { scrapeLiveShare, parseEtaToIso } from "../../../lib/liveshare";
+import {
+  scrapeLiveShare,
+  parseEtaToIso,
+  parseDeadlineToIso,
+} from "../../../lib/liveshare";
 import { sendLateEmail } from "../../../lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const FALLBACK_TZ = process.env.DEFAULT_TIMEZONE || "America/Chicago";
+
 // GET /api/check?key=CHECK_SECRET
-// Hybrid refresh:
-//  - Truck# loads: read live GPS from Samsara + compute ETA via Mapbox (all, every run).
-//  - Live Share loads: scrape the pasted link's ETA (a small batch per run).
-// Then compare each to its deadline and email newly-late loads.
+// Hybrid refresh. Deadlines are interpreted in each destination's LOCAL time:
+//  - Truck# loads: timezone derived from the destination coordinates.
+//  - Live Share loads: timezone taken from the ETA text (e.g. "CDT").
 export async function GET(req) {
   const reqUrl = new URL(req.url);
   const secret = process.env.CHECK_SECRET;
@@ -41,15 +47,7 @@ export async function GET(req) {
 
   try {
     const supabase = getSupabase();
-
-    const { data: settings } = await supabase
-      .from("settings")
-      .select("timezone")
-      .eq("id", 1)
-      .maybeSingle();
-    // Notification recipient is fixed via env (no per-user entry).
     const notifyEmail = process.env.NOTIFY_EMAIL || null;
-    const timezone = settings?.timezone || "America/Chicago";
 
     const { data: loads, error } = await supabase
       .from("loads")
@@ -66,7 +64,6 @@ export async function GET(req) {
     const now = Date.now();
     const results = [];
 
-    // ---- Truck # loads (Samsara API + Mapbox) ----
     if (truckLoads.length > 0) {
       if (!hasSamsaraToken()) {
         for (const load of truckLoads) {
@@ -80,31 +77,16 @@ export async function GET(req) {
         const tokenErrors = [];
         const gpsByName = await getVehicleGpsByName(tokenErrors);
         for (const load of truckLoads) {
-          const out = await checkTruckLoad(
-            supabase,
-            load,
-            gpsByName,
-            timezone,
-            graceMs,
-            now,
-            notifyEmail
+          results.push(
+            await checkTruckLoad(supabase, load, gpsByName, graceMs, now, notifyEmail)
           );
-          results.push(out);
         }
         if (tokenErrors.length) results.push({ tokenErrors });
       }
     }
 
-    // ---- Live Share loads (scrape) ----
     for (const load of linkLoads) {
-      const out = await checkLinkLoad(
-        supabase,
-        load,
-        timezone,
-        graceMs,
-        notifyEmail
-      );
-      results.push(out);
+      results.push(await checkLinkLoad(supabase, load, graceMs, notifyEmail));
     }
 
     return Response.json({
@@ -112,7 +94,6 @@ export async function GET(req) {
       truckLoads: truckLoads.length,
       linkLoadsChecked: linkLoads.length,
       notifyEmail: notifyEmail ? "set" : "missing",
-      timezone,
       results,
     });
   } catch (e) {
@@ -120,15 +101,7 @@ export async function GET(req) {
   }
 }
 
-async function checkTruckLoad(
-  supabase,
-  load,
-  gpsByName,
-  timezone,
-  graceMs,
-  now,
-  notifyEmail
-) {
+async function checkTruckLoad(supabase, load, gpsByName, graceMs, now, notifyEmail) {
   const out = { position: load.position, truck: load.truck_number };
   try {
     const gps = gpsByName.get(normalizeTruck(load.truck_number));
@@ -161,10 +134,12 @@ async function checkTruckLoad(
       return { ...out, status: "error", error: "geocode failed" };
     }
 
+    // Timezone comes from the destination — deadline is that location's local time.
+    const tz = tzFromCoords(dest.lat, dest.lng) || FALLBACK_TZ;
     const etaSec = await drivingEtaSeconds({ lat: gps.lat, lng: gps.lng }, dest);
     const etaIso = new Date(now + etaSec * 1000).toISOString();
-    const etaDisplay = formatEta(etaIso, timezone);
-    const deadlineIso = localToIso(load.deadline, timezone);
+    const etaDisplay = formatEta(etaIso, tz);
+    const deadlineIso = localToIso(load.deadline, tz);
 
     return finalize(supabase, load, {
       etaIso,
@@ -185,17 +160,17 @@ async function checkTruckLoad(
   }
 }
 
-async function checkLinkLoad(supabase, load, timezone, graceMs, notifyEmail) {
+async function checkLinkLoad(supabase, load, graceMs, notifyEmail) {
   const out = { position: load.position, link: true };
   try {
     const { etaText, etaIso, destination } = await scrapeLiveShare(
       load.samsara_url
     );
-    const etaDisplay = etaText; // already a readable clock time like "6:15 AM CDT"
-    const deadlineIso = localToIso(load.deadline, timezone);
+    // Deadline interpreted in the ETA's reported timezone (destination local).
+    const deadlineIso = parseDeadlineToIso(load.deadline, etaText);
     return finalize(supabase, load, {
       etaIso: etaIso || parseEtaToIso(etaText),
-      etaDisplay,
+      etaDisplay: etaText,
       deadlineIso,
       graceMs,
       truck_at: destination ? `Dest: ${destination}` : null,
@@ -212,7 +187,6 @@ async function checkLinkLoad(supabase, load, timezone, graceMs, notifyEmail) {
   }
 }
 
-// Shared: compute late/on-time, email if newly late, persist.
 async function finalize(
   supabase,
   load,

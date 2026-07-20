@@ -134,9 +134,10 @@ is projected to miss its deadline.
 
 ## Using it
 1. Open your Vercel URL.
-2. Set the **deadline time zone** (top right) — how your typed deadlines are
-   interpreted. Alerts always go to the fixed `NOTIFY_EMAIL` address, so there's
-   no email to enter.
+2. Deadlines are read in the **destination's local time**, detected automatically
+   from each address — so type the appointment time exactly as it appears on the
+   load. Alerts always go to the fixed `NOTIFY_EMAIL` address, so there's nothing
+   to configure here.
 3. **Fastest way — paste your dispatch notes.** Click **Paste loads**, paste one
    or many blocks like:
    ```
@@ -169,7 +170,12 @@ Open http://localhost:3000.
 ## Notes & limits
 - You get **one** email when a load flips to Late. If its ETA recovers to on-time
   and later goes late again, you get a fresh alert.
-- Typed deadlines use the **time zone** set in the app (default Central).
+- Typed deadlines are interpreted in the **destination's local time zone**,
+  detected automatically from the address (handles DST and Arizona correctly).
+- **Troubleshooting:** visit `https://YOUR-APP.vercel.app/api/health` — it shows
+  which env vars are set and whether the database is reachable. A 500 on save
+  almost always means the Supabase env vars aren't set or `supabase-schema.sql`
+  wasn't run yet.
 - Editing a row's source, destination, deadline, or type re-checks it; changing the
   destination re-geocodes it.
 - The check endpoint is protected by `CHECK_SECRET`; the in-app "Check now" button

@@ -5,14 +5,6 @@ import { parseLoads } from "../lib/parseLoads";
 
 const ROWS = 30;
 
-const TIMEZONES = [
-  ["America/New_York", "Eastern"],
-  ["America/Chicago", "Central"],
-  ["America/Denver", "Mountain"],
-  ["America/Phoenix", "Arizona"],
-  ["America/Los_Angeles", "Pacific"],
-];
-
 function blankRow(position) {
   return {
     position,
@@ -80,7 +72,6 @@ export default function Page() {
   const [rows, setRows] = useState(() =>
     Array.from({ length: ROWS }, (_, i) => blankRow(i))
   );
-  const [timezone, setTimezone] = useState("America/Chicago");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -92,14 +83,12 @@ export default function Page() {
   useEffect(() => {
     (async () => {
       try {
-        const [lr, sr] = await Promise.all([
-          fetch("/api/loads").then((r) => r.json()),
-          fetch("/api/settings").then((r) => r.json()),
-        ]);
+        const lr = await fetch("/api/loads").then((r) => r.json());
         if (lr.loads) setRows(mergeRows(lr.loads));
-        if (sr.timezone) setTimezone(sr.timezone);
+        else if (lr.error)
+          setMessage("Couldn't load data: " + lr.error + " — see /api/health.");
       } catch (e) {
-        setMessage("Could not load data. Check your Supabase env vars.");
+        setMessage("Could not load data. Check setup at /api/health.");
       } finally {
         setLoading(false);
       }
@@ -169,18 +158,15 @@ export default function Page() {
         source: r.source,
         destination: r.destination,
       }));
-      const [lr] = await Promise.all([
-        fetch("/api/loads", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rows: payload }),
-        }).then((r) => r.json()),
-        fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ timezone }),
-        }),
-      ]);
+      const lr = await fetch("/api/loads", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: payload }),
+      }).then((r) => r.json());
+      if (lr.error) {
+        setMessage("Save failed: " + lr.error + " — check /api/health.");
+        return;
+      }
       if (lr.loads) setRows(mergeRows(lr.loads));
       setMessage("Saved.");
     } catch (e) {
@@ -217,25 +203,10 @@ export default function Page() {
           <h1 className="title">Load Tracker</h1>
           <p className="subtitle">
             Per load, enter a <b>truck #</b> (if it&rsquo;s on your Samsara API)
-            or paste a <b>Live Share link</b>, plus the deadline. We track the
-            ETA and email you if it slips past the deadline.
+            or paste a <b>Live Share link</b>, plus the deadline. Deadlines are
+            read in the <b>destination&rsquo;s local time</b>, and we email you if
+            the ETA slips past it.
           </p>
-        </div>
-        <div className="settings-box">
-          <div className="tz-box">
-            <label htmlFor="tz">Deadline time zone</label>
-            <select
-              id="tz"
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-            >
-              {TIMEZONES.map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </div>
         </div>
       </div>
 
