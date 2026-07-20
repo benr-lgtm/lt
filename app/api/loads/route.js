@@ -10,14 +10,22 @@ const MAX_ROWS = 30;
 export async function GET() {
   try {
     const supabase = getSupabase();
-    const { data, error } = await supabase
+
+    const { data, error, count } = await supabase
       .from("loads")
-      .select("*")
+      .select("*", { count: "exact" })
       .order("position", { ascending: true });
-    if (error) throw error;
-    return Response.json({ loads: data || [] });
+
+    return Response.json({
+      error: error?.message ?? null,
+      count,
+      rows: data,
+      url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    });
   } catch (e) {
-    return Response.json({ error: e.message }, { status: 500 });
+    return Response.json({
+      crash: e.message,
+    });
   }
 }
 
