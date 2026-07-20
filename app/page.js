@@ -116,26 +116,24 @@ export default function Page() {
     }
     let added = 0;
     let assumed = 0;
-    setRows((prev) => {
-      const next = prev.slice();
-      let pi = 0;
-      for (let i = 0; i < next.length && pi < parsed.length; i++) {
-        const r = next[i];
-        const empty = !r.name && !r.source && !r.destination && !r.deadline;
-        if (!empty) continue;
-        const p = parsed[pi++];
-        if (p.timeAssumed) assumed++;
-        next[i] = {
-          ...r,
-          name: p.notes || "",
-          kind: p.kind,
-          deadline: p.deadline || "",
-          destination: p.destination || "",
-        };
-        added++;
-      }
-      return next;
-    });
+    const next = rows.slice();
+    let pi = 0;
+    for (let i = 0; i < next.length && pi < parsed.length; i++) {
+      const r = next[i];
+      const empty = !r.name && !r.source && !r.destination && !r.deadline;
+      if (!empty) continue;
+      const p = parsed[pi++];
+      if (p.timeAssumed) assumed++;
+      next[i] = {
+        ...r,
+        name: p.notes || "",
+        kind: p.kind,
+        deadline: p.deadline || "",
+        destination: p.destination || "",
+      };
+      added++;
+    }
+    setRows(next);
     const leftover = parsed.length - added;
     let msg = `Added ${added} load${added === 1 ? "" : "s"}. Now fill in the truck # or link for each, then Save.`;
     if (assumed)
@@ -272,6 +270,16 @@ export default function Page() {
         )}
         {pasteMsg && !pasteOpen ? (
           <p className="paste-result">{pasteMsg}</p>
+        ) : null}
+        {message && !pasteOpen ? (
+          <p
+            className={
+              "paste-result" +
+              (/fail|error|couldn|could not/i.test(message) ? " err" : "")
+            }
+          >
+            {message}
+          </p>
         ) : null}
 
         <div className="table-scroll">

@@ -118,6 +118,7 @@ input::placeholder { color: #b6bcc7; }
 .paste-area:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
 .paste-actions { display: flex; gap: 8px; margin-top: 10px; }
 .paste-result { margin: 0; padding: 12px 18px; font-size: 13px; color: var(--green); background: var(--green-bg); border-bottom: 1px solid var(--line); }
+.paste-result.err { color: var(--red); background: var(--red-bg); }
 
 .table-scroll { width: 100%; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 1080px; }
