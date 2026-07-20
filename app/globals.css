@@ -29,7 +29,8 @@ html, body {
 }
 
 .wrap {
-  max-width: 1180px;
+  max-width: none;
+  width: 100%;
   margin: 0 auto;
   padding: 48px 24px 80px;
 }
@@ -117,11 +118,20 @@ input::placeholder { color: #b6bcc7; }
 }
 .paste-area:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
 .paste-actions { display: flex; gap: 8px; margin-top: 10px; }
+.paste-row { display: flex; gap: 14px; align-items: stretch; }
+.paste-row .paste-area { flex: 1; }
+.paste-truck-box { display: flex; flex-direction: column; gap: 6px; width: 220px; flex-shrink: 0; }
+.paste-truck-box label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.paste-truck-hint { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+@media (max-width: 640px) {
+  .paste-row { flex-direction: column; }
+  .paste-truck-box { width: 100%; }
+}
 .paste-result { margin: 0; padding: 12px 18px; font-size: 13px; color: var(--green); background: var(--green-bg); border-bottom: 1px solid var(--line); }
 .paste-result.err { color: var(--red); background: var(--red-bg); }
 
 .table-scroll { width: 100%; overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; min-width: 1080px; }
+table { width: 100%; border-collapse: collapse; min-width: 1200px; }
 
 thead th {
   text-align: left;
@@ -142,8 +152,9 @@ tbody tr:hover { background: #fcfcfd; }
 
 .col-idx { width: 40px; color: var(--muted); font-size: 13px; text-align: center; }
 .cell-input { width: 100%; min-width: 110px; }
-.source-input { width: 100%; min-width: 240px; }
+.source-input { width: 100%; min-width: 110px; max-width: 160px; }
 .dest-input { width: 100%; min-width: 190px; }
+.notes-input { width: 100%; min-width: 130px; }
 input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .deadline-cell { display: flex; gap: 6px; align-items: center; }
 .deadline-cell input[type="datetime-local"] { flex: 1; min-width: 190px; }

@@ -22,6 +22,7 @@ alter table public.loads add column if not exists eta_display  text;
 alter table public.loads add column if not exists truck_at     text;
 alter table public.loads add column if not exists status       text not null default 'unknown';
 alter table public.loads add column if not exists status_note  text;
+alter table public.loads add column if not exists notes        text;
 alter table public.loads add column if not exists alerted      boolean not null default false;
 alter table public.loads add column if not exists updated_at   timestamptz not null default now();
 

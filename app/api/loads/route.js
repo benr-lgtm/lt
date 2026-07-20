@@ -47,6 +47,7 @@ export async function PUT(req) {
       const kind = r.kind === "pickup" ? "pickup" : "delivery";
       const deadline = (r.deadline || "").trim() || null;
       const destination = (r.destination || "").trim() || null;
+      const notes = (r.notes || "").trim() || null;
 
       // Split the combined source into truck # vs Live Share URL.
       const source = (r.source || "").trim();
@@ -71,6 +72,7 @@ export async function PUT(req) {
         truck_number,
         samsara_url,
         destination,
+        notes,
         updated_at: new Date().toISOString(),
       };
       // IMPORTANT: every row in the bulk upsert must carry the SAME set of

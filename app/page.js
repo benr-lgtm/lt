@@ -13,6 +13,7 @@ function blankRow(position) {
     kind: "delivery",
     deadline: "",
     destination: "",
+    notes: "",
     status: "unknown",
     eta_display: "",
     truck_at: "",
@@ -36,6 +37,7 @@ function mergeRows(loads) {
           kind: l.kind || "delivery",
           deadline: l.deadline || "",
           destination: l.destination || "",
+          notes: l.notes || "",
           status: l.status || "unknown",
           eta_display: l.eta_display || "",
           truck_at: l.truck_at || "",
@@ -78,6 +80,7 @@ export default function Page() {
   const [message, setMessage] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [pasteTruck, setPasteTruck] = useState("");
   const [pasteMsg, setPasteMsg] = useState("");
 
   useEffect(() => {
@@ -118,6 +121,7 @@ export default function Page() {
     let assumed = 0;
     const next = rows.slice();
     let pi = 0;
+    const truck = pasteTruck.trim();
     for (let i = 0; i < next.length && pi < parsed.length; i++) {
       const r = next[i];
       const empty = !r.name && !r.source && !r.destination && !r.deadline;
@@ -127,6 +131,7 @@ export default function Page() {
       next[i] = {
         ...r,
         name: p.notes || "",
+        source: truck || r.source,
         kind: p.kind,
         deadline: p.deadline || "",
         destination: p.destination || "",
@@ -135,12 +140,15 @@ export default function Page() {
     }
     setRows(next);
     const leftover = parsed.length - added;
-    let msg = `Added ${added} load${added === 1 ? "" : "s"}. Now fill in the truck # or link for each, then Save.`;
+    let msg = truck
+      ? `Added ${added} load${added === 1 ? "" : "s"} with truck ${truck}. Review, then Save.`
+      : `Added ${added} load${added === 1 ? "" : "s"}. Now fill in the truck # or link for each, then Save.`;
     if (assumed)
       msg += ` ${assumed} had no time — set to 23:59; adjust if needed.`;
     if (leftover > 0) msg += ` ${leftover} didn't fit (table is full).`;
     setPasteMsg(msg);
     setPasteText("");
+    setPasteTruck("");
     setPasteOpen(false);
   }
 
@@ -155,6 +163,7 @@ export default function Page() {
         deadline: r.deadline,
         source: r.source,
         destination: r.destination,
+        notes: r.notes,
       }));
       const lr = await fetch("/api/loads", {
         method: "PUT",
@@ -232,6 +241,9 @@ export default function Page() {
             >
               {checking ? "Checking…" : "Check now"}
             </button>
+            <button className="btn" onClick={save} disabled={saving || loading}>
+              {saving ? "Saving…" : "Save"}
+            </button>
           </div>
         </div>
 
@@ -243,15 +255,30 @@ export default function Page() {
               then the address. We&rsquo;ll fill the DEL/PU, date &amp; time,
               destination, and notes — you just add the truck # or link.
             </p>
-            <textarea
-              className="paste-area"
-              placeholder={
-                "Delivery: 07/20/26 07:00\nNAFA EXPRESS\n8909 McGaw Ct\nColumbia, MD 21045\n\nPU: 07/17/2026 0800 AM\n..."
-              }
-              value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
-              rows={8}
-            />
+            <div className="paste-row">
+              <textarea
+                className="paste-area"
+                placeholder={
+                  "Delivery: 07/20/26 07:00\nNAFA EXPRESS\n8909 McGaw Ct\nColumbia, MD 21045\n\nPU: 07/17/2026 0800 AM\n..."
+                }
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                rows={8}
+              />
+              <div className="paste-truck-box">
+                <label>Truck # or link</label>
+                <input
+                  className="paste-truck-input"
+                  placeholder="3040 or link"
+                  value={pasteTruck}
+                  onChange={(e) => setPasteTruck(e.target.value)}
+                />
+                <p className="paste-truck-hint">
+                  Applied to every load in this paste. Leave blank to fill in
+                  per row.
+                </p>
+              </div>
+            </div>
             <div className="paste-actions">
               <button className="btn" onClick={applyPaste} disabled={!pasteText.trim()}>
                 Add to table
@@ -287,11 +314,12 @@ export default function Page() {
             <thead>
               <tr>
                 <th className="col-idx">#</th>
-                <th>Notes (optional)</th>
-                <th>Truck # or Live Share link</th>
+                <th>Truck # or link</th>
+                <th>Facility name</th>
                 <th>Destination</th>
                 <th>DEL / PU date &amp; time</th>
                 <th>Status</th>
+                <th>Notes</th>
               </tr>
             </thead>
             <tbody>
@@ -300,18 +328,18 @@ export default function Page() {
                   <td className="col-idx">{i + 1}</td>
                   <td>
                     <input
-                      className="cell-input"
-                      placeholder="(auto-filled from paste)"
-                      value={r.name}
-                      onChange={(e) => update(i, "name", e.target.value)}
+                      className="source-input"
+                      placeholder="3040 or link"
+                      value={r.source}
+                      onChange={(e) => update(i, "source", e.target.value)}
                     />
                   </td>
                   <td>
                     <input
-                      className="source-input"
-                      placeholder="3040  —or—  https://cloud.samsara.com/…/viewer/…"
-                      value={r.source}
-                      onChange={(e) => update(i, "source", e.target.value)}
+                      className="cell-input"
+                      placeholder="(auto-filled from paste)"
+                      value={r.name}
+                      onChange={(e) => update(i, "name", e.target.value)}
                     />
                   </td>
                   <td>
@@ -346,6 +374,14 @@ export default function Page() {
                   </td>
                   <td>
                     <StatusBadge row={r} />
+                  </td>
+                  <td>
+                    <input
+                      className="notes-input"
+                      placeholder="Notes"
+                      value={r.notes}
+                      onChange={(e) => update(i, "notes", e.target.value)}
+                    />
                   </td>
                 </tr>
               ))}
