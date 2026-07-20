@@ -73,6 +73,11 @@ export async function PUT(req) {
         destination,
         updated_at: new Date().toISOString(),
       };
+      // IMPORTANT: every row in the bulk upsert must carry the SAME set of
+      // keys. PostgREST inserts the union of columns across all rows and
+      // fills missing keys with NULL — so if one changed row includes
+      // `status` and an unchanged row doesn't, the unchanged row's status
+      // gets nulled and the whole save fails the not-null constraint.
       if (changed) {
         row.status = "unknown";
         row.status_note = null;
@@ -83,7 +88,19 @@ export async function PUT(req) {
         if (!prev || prev.destination !== destination) {
           row.dest_lat = null;
           row.dest_lng = null;
+        } else {
+          row.dest_lat = prev.dest_lat ?? null;
+          row.dest_lng = prev.dest_lng ?? null;
         }
+      } else {
+        row.status = prev.status ?? "unknown";
+        row.status_note = prev.status_note ?? null;
+        row.alerted = prev.alerted ?? false;
+        row.eta_iso = prev.eta_iso ?? null;
+        row.eta_display = prev.eta_display ?? null;
+        row.truck_at = prev.truck_at ?? null;
+        row.dest_lat = prev.dest_lat ?? null;
+        row.dest_lng = prev.dest_lng ?? null;
       }
       upserts.push(row);
     }
