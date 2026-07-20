@@ -4,7 +4,7 @@ import { looksLikeShareUrl } from "../../../lib/liveshare";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_ROWS = 30;
+const MAX_ROWS = 500;
 
 // GET /api/loads -> all loads ordered by row position.
 export async function GET() {

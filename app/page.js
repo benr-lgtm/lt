@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseLoads } from "../lib/parseLoads";
 
-const ROWS = 30;
+const MIN_ROWS = 15; // table never shows fewer rows than this
+const SPARE_ROWS = 5; // empty rows always kept below the last filled one
 
 function blankRow(position) {
   return {
@@ -25,9 +26,29 @@ function isLink(s) {
   return /^https?:\/\//i.test(String(s || "").trim());
 }
 
+function rowEmpty(r) {
+  return !r.name && !r.source && !r.destination && !r.deadline && !r.notes;
+}
+
+// Keep SPARE_ROWS empty rows after the last filled row (and at least MIN_ROWS
+// total). Positions are re-stamped to the row index.
+function withSpare(list) {
+  let lastFilled = -1;
+  list.forEach((r, i) => {
+    if (!rowEmpty(r)) lastFilled = i;
+  });
+  const size = Math.max(MIN_ROWS, lastFilled + 1 + SPARE_ROWS);
+  const next = [];
+  for (let i = 0; i < size; i++) {
+    next.push(list[i] ? { ...list[i], position: i } : blankRow(i));
+  }
+  return next;
+}
+
 function mergeRows(loads) {
   const byPos = new Map((loads || []).map((l) => [l.position, l]));
-  return Array.from({ length: ROWS }, (_, i) => {
+  const maxPos = Math.max(-1, ...(loads || []).map((l) => l.position));
+  const base = Array.from({ length: Math.max(MIN_ROWS, maxPos + 1) }, (_, i) => {
     const l = byPos.get(i);
     return l
       ? {
@@ -45,13 +66,14 @@ function mergeRows(loads) {
         }
       : blankRow(i);
   });
+  return withSpare(base);
 }
 
 function StatusBadge({ row }) {
   const map = {
     on_time: ["ontime", "On time"],
     late: ["late", "Late"],
-    error: ["error", "Check failed"],
+    error: ["error", "Failed"],
     unknown: ["unknown", "—"],
   };
   const [cls, label] = map[row.status] || map.unknown;
@@ -61,27 +83,26 @@ function StatusBadge({ row }) {
       : row.eta_display
       ? `ETA ${row.eta_display}`
       : "";
+  const tooltip = [sub, row.truck_at].filter(Boolean).join(" — ");
   return (
-    <span className={`badge ${cls}`} title={row.truck_at || ""}>
+    <span className={`badge ${cls}`} title={tooltip}>
       <span className="dot" />
-      {label}
-      {sub ? <span className="eta-note">{sub}</span> : null}
+      <span className="badge-text">
+        {label}
+        {sub ? <span className="eta-note">{sub}</span> : null}
+      </span>
     </span>
   );
 }
 
 export default function Page() {
   const [rows, setRows] = useState(() =>
-    Array.from({ length: ROWS }, (_, i) => blankRow(i))
+    Array.from({ length: MIN_ROWS }, (_, i) => blankRow(i))
   );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState("");
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState("");
-  const [pasteTruck, setPasteTruck] = useState("");
-  const [pasteMsg, setPasteMsg] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -107,54 +128,49 @@ export default function Page() {
     setRows((prev) => {
       const next = prev.slice();
       next[i] = { ...next[i], [field]: value };
-      return next;
+      return withSpare(next);
     });
   }
 
-  function applyPaste() {
-    const parsed = parseLoads(pasteText);
-    if (!parsed.length) {
-      setPasteMsg("No loads found — check the format and try again.");
-      return;
-    }
-    let added = 0;
+  // Paste dispatch blocks (PU/DEL + address) straight into a Destination cell.
+  // The first block fills this row (keeping its truck #), remaining blocks
+  // flow into the next empty rows. A plain address pastes normally.
+  function handleDestPaste(i, e) {
+    const text = e.clipboardData ? e.clipboardData.getData("text") : "";
+    const parsed = parseLoads(text);
+    if (!parsed.length) return; // normal paste
+    e.preventDefault();
     let assumed = 0;
-    const next = rows.slice();
-    let pi = 0;
-    const truck = pasteTruck.trim();
-    for (let i = 0; i < next.length && pi < parsed.length; i++) {
-      const r = next[i];
-      const empty = !r.name && !r.source && !r.destination && !r.deadline;
-      if (!empty) continue;
-      const p = parsed[pi++];
-      if (p.timeAssumed) assumed++;
-      next[i] = {
-        ...r,
-        name: p.notes || "",
-        source: truck || r.source,
-        kind: p.kind,
-        deadline: p.deadline || "",
-        destination: p.destination || "",
+    setRows((prev) => {
+      const next = prev.slice();
+      let pi = 0;
+      const fill = (idx, p) => {
+        next[idx] = {
+          ...next[idx],
+          name: p.notes || "",
+          kind: p.kind,
+          deadline: p.deadline || "",
+          destination: p.destination || "",
+        };
+        if (p.timeAssumed) assumed++;
       };
-      added++;
-    }
-    setRows(next);
-    const leftover = parsed.length - added;
-    let msg = truck
-      ? `Added ${added} load${added === 1 ? "" : "s"} with truck ${truck}. Review, then Save.`
-      : `Added ${added} load${added === 1 ? "" : "s"}. Now fill in the truck # or link for each, then Save.`;
-    if (assumed)
-      msg += ` ${assumed} had no time — set to 23:59; adjust if needed.`;
-    if (leftover > 0) msg += ` ${leftover} didn't fit (table is full).`;
-    setPasteMsg(msg);
-    setPasteText("");
-    setPasteTruck("");
-    setPasteOpen(false);
+      fill(i, parsed[pi++]);
+      let j = i + 1;
+      while (pi < parsed.length) {
+        while (j < next.length && !rowEmpty(next[j])) j++;
+        if (j >= next.length) next.push(blankRow(next.length));
+        fill(j, parsed[pi++]);
+        j++;
+      }
+      return withSpare(next);
+    });
+    let msg = `Added ${parsed.length} load${parsed.length === 1 ? "" : "s"} from paste. Add the truck # or link where missing, then Save & Check.`;
+    if (assumed) msg += ` ${assumed} had no time — set to 23:59; adjust if needed.`;
+    setMessage(msg);
   }
 
   async function save() {
     setSaving(true);
-    setMessage("");
     try {
       const payload = rows.map((r) => ({
         position: r.position,
@@ -172,29 +188,32 @@ export default function Page() {
       }).then((r) => r.json());
       if (lr.error) {
         setMessage("Save failed: " + lr.error + " — check /api/health.");
-        return;
+        return false;
       }
       if (lr.loads) setRows(mergeRows(lr.loads));
-      setMessage("Saved.");
+      return true;
     } catch (e) {
       setMessage("Save failed: " + e.message);
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
-  async function checkNow() {
+  async function saveAndCheck() {
     setChecking(true);
-    setMessage("Checking live ETAs…");
+    setMessage("Saving…");
     try {
-      await save();
+      const ok = await save();
+      if (!ok) return;
+      setMessage("Saved. Checking live ETAs…");
       const res = await fetch("/api/check").then((r) => r.json());
       const lr = await fetch("/api/loads").then((r) => r.json());
       if (lr.loads) setRows(mergeRows(lr.loads));
       setMessage(
         res.checked != null
-          ? `Checked ${res.checked} load(s).`
-          : res.error || "Check finished."
+          ? `Saved & checked ${res.checked} load(s).`
+          : res.error || "Saved. Check finished."
       );
     } catch (e) {
       setMessage("Check failed: " + e.message);
@@ -203,6 +222,8 @@ export default function Page() {
     }
   }
 
+  const busy = checking || saving || loading;
+
   return (
     <div className="wrap">
       <div className="header">
@@ -210,9 +231,11 @@ export default function Page() {
           <h1 className="title">Load Tracker</h1>
           <p className="subtitle">
             Per load, enter a <b>truck #</b> (if it&rsquo;s on your Samsara API)
-            or paste a <b>Live Share link</b>, plus the deadline. Deadlines are
-            read in the <b>destination&rsquo;s local time</b>, and we email you if
-            the ETA slips past it.
+            or paste a <b>Live Share link</b>, plus the deadline. You can paste
+            whole dispatch blocks (PU/DEL + address) straight into a{" "}
+            <b>Destination</b> cell — each block becomes a row. Deadlines are
+            read in the <b>destination&rsquo;s local time</b>, and we email you
+            if the ETA slips past it.
           </p>
         </div>
       </div>
@@ -225,80 +248,13 @@ export default function Page() {
               : `${filledCount} load${filledCount === 1 ? "" : "s"} being tracked`}
           </span>
           <div className="toolbar-actions">
-            <button
-              className="btn secondary"
-              onClick={() => {
-                setPasteMsg("");
-                setPasteOpen((v) => !v);
-              }}
-            >
-              {pasteOpen ? "Close" : "Paste loads"}
-            </button>
-            <button
-              className="btn secondary"
-              onClick={checkNow}
-              disabled={checking || saving || loading}
-            >
-              {checking ? "Checking…" : "Check now"}
-            </button>
-            <button className="btn" onClick={save} disabled={saving || loading}>
-              {saving ? "Saving…" : "Save"}
+            <button className="btn" onClick={saveAndCheck} disabled={busy}>
+              {checking ? "Working…" : "Save & Check"}
             </button>
           </div>
         </div>
 
-        {pasteOpen && (
-          <div className="paste-panel">
-            <p className="paste-help">
-              Paste one or more load blocks (like your dispatch notes). Each block
-              should start with <b>Delivery/DEL</b> or <b>Pickup/PU</b> and a date,
-              then the address. We&rsquo;ll fill the DEL/PU, date &amp; time,
-              destination, and notes — you just add the truck # or link.
-            </p>
-            <div className="paste-row">
-              <textarea
-                className="paste-area"
-                placeholder={
-                  "Delivery: 07/20/26 07:00\nNAFA EXPRESS\n8909 McGaw Ct\nColumbia, MD 21045\n\nPU: 07/17/2026 0800 AM\n..."
-                }
-                value={pasteText}
-                onChange={(e) => setPasteText(e.target.value)}
-                rows={8}
-              />
-              <div className="paste-truck-box">
-                <label>Truck # or link</label>
-                <input
-                  className="paste-truck-input"
-                  placeholder="3040 or link"
-                  value={pasteTruck}
-                  onChange={(e) => setPasteTruck(e.target.value)}
-                />
-                <p className="paste-truck-hint">
-                  Applied to every load in this paste. Leave blank to fill in
-                  per row.
-                </p>
-              </div>
-            </div>
-            <div className="paste-actions">
-              <button className="btn" onClick={applyPaste} disabled={!pasteText.trim()}>
-                Add to table
-              </button>
-              <button
-                className="btn secondary"
-                onClick={() => {
-                  setPasteOpen(false);
-                  setPasteText("");
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-        {pasteMsg && !pasteOpen ? (
-          <p className="paste-result">{pasteMsg}</p>
-        ) : null}
-        {message && !pasteOpen ? (
+        {message ? (
           <p
             className={
               "paste-result" +
@@ -318,7 +274,7 @@ export default function Page() {
                 <th>Facility name</th>
                 <th>Destination</th>
                 <th>DEL / PU date &amp; time</th>
-                <th>Status</th>
+                <th className="col-status">Status</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -348,11 +304,12 @@ export default function Page() {
                       placeholder={
                         isLink(r.source)
                           ? "(in the link)"
-                          : "Address, city, state"
+                          : "Address — or paste PU/DEL blocks here"
                       }
                       value={r.destination}
                       disabled={isLink(r.source)}
                       onChange={(e) => update(i, "destination", e.target.value)}
+                      onPaste={(e) => handleDestPaste(i, e)}
                     />
                   </td>
                   <td>
@@ -372,7 +329,7 @@ export default function Page() {
                       />
                     </div>
                   </td>
-                  <td>
+                  <td className="col-status">
                     <StatusBadge row={r} />
                   </td>
                   <td>
@@ -391,15 +348,15 @@ export default function Page() {
 
         <div className="savebar">
           <span className="save-note">{message}</span>
-          <button className="btn" onClick={save} disabled={saving || loading}>
-            {saving ? "Saving…" : "Save"}
+          <button className="btn" onClick={saveAndCheck} disabled={busy}>
+            {checking ? "Working…" : "Save & Check"}
           </button>
         </div>
       </div>
 
       <p className="footer">
-        Statuses refresh automatically every few minutes. “Check now” refreshes
-        immediately.
+        Statuses refresh automatically every few minutes. &ldquo;Save &amp;
+        Check&rdquo; saves the table and refreshes live ETAs immediately.
       </p>
     </div>
   );

@@ -10,6 +10,7 @@ import {
 import { geocode, drivingEtaSeconds } from "../../../lib/maps";
 import {
   scrapeLiveShare,
+  launchBrowser,
   parseEtaToIso,
   parseDeadlineToIso,
 } from "../../../lib/liveshare";
@@ -42,7 +43,7 @@ export async function GET(req) {
     Math.max(0, parseInt(process.env.LATE_GRACE_MIN || "0", 10)) * 60000;
   const linkBatch = Math.max(
     0,
-    parseInt(process.env.CHECK_BATCH_LINKS || "2", 10)
+    parseInt(process.env.CHECK_BATCH_LINKS || "6", 10)
   );
 
   try {
@@ -85,8 +86,40 @@ export async function GET(req) {
       }
     }
 
-    for (const load of linkLoads) {
-      results.push(await checkLinkLoad(supabase, load, graceMs, notifyEmail));
+    // Scrape all Live Share links in parallel from ONE shared Chromium
+    // instance (one page per link) — much faster than sequential launches
+    // and much lighter than one browser per link.
+    if (linkLoads.length > 0) {
+      let sharedBrowser = null;
+      try {
+        sharedBrowser = await launchBrowser();
+      } catch (e) {
+        for (const load of linkLoads) {
+          await update(supabase, load.position, {
+            status: "error",
+            status_note: e.message?.slice(0, 200) || "browser launch failed",
+          });
+          results.push({ position: load.position, status: "error", error: e.message });
+        }
+      }
+      if (sharedBrowser) {
+        try {
+          const settled = await Promise.allSettled(
+            linkLoads.map((load) =>
+              checkLinkLoad(supabase, load, graceMs, notifyEmail, sharedBrowser)
+            )
+          );
+          for (const s of settled) {
+            results.push(
+              s.status === "fulfilled"
+                ? s.value
+                : { status: "error", error: String(s.reason) }
+            );
+          }
+        } finally {
+          try { await sharedBrowser.close(); } catch (_) {}
+        }
+      }
     }
 
     return Response.json({
@@ -160,11 +193,12 @@ async function checkTruckLoad(supabase, load, gpsByName, graceMs, now, notifyEma
   }
 }
 
-async function checkLinkLoad(supabase, load, graceMs, notifyEmail) {
+async function checkLinkLoad(supabase, load, graceMs, notifyEmail, browser) {
   const out = { position: load.position, link: true };
   try {
     const { etaText, etaIso, destination } = await scrapeLiveShare(
-      load.samsara_url
+      load.samsara_url,
+      { browser }
     );
     // Deadline interpreted in the ETA's reported timezone (destination local).
     const deadlineIso = parseDeadlineToIso(load.deadline, etaText);

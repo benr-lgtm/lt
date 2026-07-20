@@ -32,7 +32,8 @@ html, body {
   max-width: none;
   width: 100%;
   margin: 0 auto;
-  padding: 48px 24px 80px;
+  /* leave a Save-button-sized gutter on each side */
+  padding: 48px 130px 80px;
 }
 
 .header {
@@ -100,33 +101,6 @@ input::placeholder { color: #b6bcc7; }
 .toolbar .status-line { font-size: 13px; color: var(--muted); }
 .toolbar-actions { display: flex; gap: 8px; }
 
-.paste-panel { padding: 16px 18px; border-bottom: 1px solid var(--line); background: #fbfbfc; }
-.paste-help { margin: 0 0 10px; font-size: 13px; color: var(--muted); line-height: 1.5; }
-.paste-area {
-  width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  padding: 12px 13px;
-  resize: vertical;
-  min-height: 150px;
-  outline: none;
-}
-.paste-area:focus { border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
-.paste-actions { display: flex; gap: 8px; margin-top: 10px; }
-.paste-row { display: flex; gap: 14px; align-items: stretch; }
-.paste-row .paste-area { flex: 1; }
-.paste-truck-box { display: flex; flex-direction: column; gap: 6px; width: 220px; flex-shrink: 0; }
-.paste-truck-box label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-.paste-truck-hint { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
-@media (max-width: 640px) {
-  .paste-row { flex-direction: column; }
-  .paste-truck-box { width: 100%; }
-}
 .paste-result { margin: 0; padding: 12px 18px; font-size: 13px; color: var(--green); background: var(--green-bg); border-bottom: 1px solid var(--line); }
 .paste-result.err { color: var(--red); background: var(--red-bg); }
 
@@ -177,6 +151,7 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.secondary { color: var(--ink); background: #fff; border-color: var(--line-strong); }
 
+.col-status { width: 150px; }
 .badge {
   display: inline-flex;
   align-items: center;
@@ -186,13 +161,15 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
   padding: 6px 11px;
   border-radius: 999px;
   white-space: nowrap;
+  max-width: 150px;
 }
-.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.badge .badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .badge.ontime { color: var(--green); background: var(--green-bg); }
 .badge.late   { color: var(--red);   background: var(--red-bg); }
 .badge.unknown{ color: var(--muted); background: #f0f1f4; }
 .badge.error  { color: var(--amber); background: var(--amber-bg); }
-.eta-note { display:block; font-size: 11px; color: var(--muted); font-weight: 500; margin-top: 3px; }
+.eta-note { display:block; font-size: 11px; color: var(--muted); font-weight: 500; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
 
 .savebar {
   display: flex;
@@ -207,6 +184,9 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 
 .footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }
 
+@media (max-width: 1100px) {
+  .wrap { padding: 40px 40px 70px; }
+}
 @media (max-width: 640px) {
   .wrap { padding: 28px 14px 60px; }
   .title { font-size: 24px; }
