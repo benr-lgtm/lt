@@ -73,7 +73,7 @@ function StatusBadge({ row }) {
   const map = {
     on_time: ["ontime", "On time"],
     late: ["late", "Late"],
-    error: ["error", "Failed"],
+    error: ["error", "Couldn't track"],
     unknown: ["unknown", "—"],
   };
   const [cls, label] = map[row.status] || map.unknown;
@@ -123,6 +123,41 @@ export default function Page() {
     () => rows.filter((r) => r.source && r.deadline).length,
     [rows]
   );
+
+  function clearRow(i) {
+    setRows((prev) => {
+      const next = prev.slice();
+      next[i] = blankRow(next[i].position);
+      return withSpare(next);
+    });
+    setMessage("Row cleared — it's removed from the database on the next Save & Check.");
+  }
+
+  async function clearAll() {
+    if (
+      !window.confirm(
+        "Clear ALL rows? This deletes every load from the tracker and cannot be undone."
+      )
+    )
+      return;
+    setSaving(true);
+    setMessage("Clearing…");
+    try {
+      const res = await fetch("/api/loads", { method: "DELETE" }).then((r) =>
+        r.json()
+      );
+      if (res.error) {
+        setMessage("Clear failed: " + res.error);
+        return;
+      }
+      setRows(Array.from({ length: MIN_ROWS }, (_, i) => blankRow(i)));
+      setMessage("All loads cleared.");
+    } catch (e) {
+      setMessage("Clear failed: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function update(i, field, value) {
     setRows((prev) => {
@@ -248,6 +283,9 @@ export default function Page() {
               : `${filledCount} load${filledCount === 1 ? "" : "s"} being tracked`}
           </span>
           <div className="toolbar-actions">
+            <button className="btn secondary" onClick={clearAll} disabled={busy}>
+              Clear all
+            </button>
             <button className="btn" onClick={saveAndCheck} disabled={busy}>
               {checking ? "Working…" : "Save & Check"}
             </button>
@@ -269,6 +307,7 @@ export default function Page() {
           <table>
             <thead>
               <tr>
+                <th className="col-clear" aria-label="Clear row" />
                 <th className="col-idx">#</th>
                 <th>Truck # or link</th>
                 <th>Facility name</th>
@@ -281,6 +320,17 @@ export default function Page() {
             <tbody>
               {rows.map((r, i) => (
                 <tr key={i}>
+                  <td className="col-clear">
+                    {!rowEmpty(r) ? (
+                      <button
+                        className="clear-btn"
+                        title="Clear this row"
+                        onClick={() => clearRow(i)}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </td>
                   <td className="col-idx">{i + 1}</td>
                   <td>
                     <input
@@ -348,6 +398,9 @@ export default function Page() {
 
         <div className="savebar">
           <span className="save-note">{message}</span>
+          <button className="btn secondary" onClick={clearAll} disabled={busy}>
+            Clear all
+          </button>
           <button className="btn" onClick={saveAndCheck} disabled={busy}>
             {checking ? "Working…" : "Save & Check"}
           </button>

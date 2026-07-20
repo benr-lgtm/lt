@@ -39,6 +39,7 @@ export async function PUT(req) {
     const byPos = new Map((existing || []).map((r) => [r.position, r]));
 
     const upserts = [];
+    const deletions = [];
     for (const r of rows) {
       const position = Number(r.position);
       if (!Number.isInteger(position) || position < 0 || position >= MAX_ROWS)
@@ -56,6 +57,15 @@ export async function PUT(req) {
       const samsara_url = isLink ? source : null;
 
       const prev = byPos.get(position);
+
+      // Fully empty row: delete it from the database instead of storing an
+      // all-null placeholder — keeps the table (and storage) clean.
+      const empty =
+        !name && !truck_number && !samsara_url && !destination && !deadline && !notes;
+      if (empty) {
+        if (prev) deletions.push(position);
+        continue;
+      }
       const changed =
         !prev ||
         prev.truck_number !== truck_number ||
@@ -107,6 +117,14 @@ export async function PUT(req) {
       upserts.push(row);
     }
 
+    if (deletions.length) {
+      const { error } = await supabase
+        .from("loads")
+        .delete()
+        .in("position", deletions);
+      if (error) throw error;
+    }
+
     if (upserts.length) {
       const { error } = await supabase
         .from("loads")
@@ -119,6 +137,18 @@ export async function PUT(req) {
       .select("*")
       .order("position", { ascending: true });
     return Response.json({ loads: data || [] });
+  } catch (e) {
+    return Response.json({ error: e.message }, { status: 500 });
+  }
+}
+
+// DELETE /api/loads -> remove every load (the "Clear all" button).
+export async function DELETE() {
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase.from("loads").delete().gte("position", 0);
+    if (error) throw error;
+    return Response.json({ ok: true, loads: [] });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }
