@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 // Middleware has already verified the signed admin cookie for every /api/admin
 // path, so these handlers can use the service-role client freely.
 
-const MAX_USERS = parseInt(process.env.MAX_USERS || "3", 10);
+// No user cap — the operator manages accounts by hand and would rather see
+// growth than be blocked by an arbitrary limit.
 const SIGNUP_BONUS_CENTS = parseInt(process.env.SIGNUP_BONUS_CENTS || "5000", 10);
 
 export async function GET() {
@@ -49,7 +50,6 @@ export async function GET() {
       })),
       usage: await allUsageToday(),
       graphqlHealth,
-      maxUsers: MAX_USERS,
     });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
@@ -86,15 +86,6 @@ export async function POST(req) {
     }
 
     if (action === "createUser") {
-      const { count } = await supabase
-        .from("profiles")
-        .select("id", { count: "exact", head: true });
-      if ((count ?? 0) >= MAX_USERS) {
-        return Response.json(
-          { error: `User cap reached (${MAX_USERS}). Raise MAX_USERS to add more.` },
-          { status: 400 }
-        );
-      }
       const email = String(body.email || "").trim().toLowerCase();
       if (!email) return Response.json({ error: "Email required." }, { status: 400 });
 
@@ -107,7 +98,14 @@ export async function POST(req) {
       if (error) return Response.json({ error: error.message }, { status: 400 });
 
       // The on_auth_user_created trigger already wrote the profile and the
-      // signup bonus; return the password once so it can be handed over.
+      // signup bonus. Name/phone are optional extras captured at creation.
+      const extra = {};
+      if (body.fullName) extra.full_name = String(body.fullName).trim();
+      if (body.phone) extra.phone = String(body.phone).trim();
+      if (Object.keys(extra).length && data.user?.id) {
+        await supabase.from("profiles").update(extra).eq("id", data.user.id);
+      }
+
       return Response.json({
         ok: true,
         userId: data.user?.id,

@@ -11,6 +11,8 @@ export default function AdminPage() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
   const [created, setCreated] = useState(null);
 
   async function load() {
@@ -53,7 +55,7 @@ export default function AdminPage() {
         <div>
           <h1 className="title">Admin</h1>
           <p className="subtitle">
-            {data.users.length} of {data.maxUsers} users · invite-only
+            {data.users.length} user{data.users.length === 1 ? "" : "s"} · invite-only
           </p>
         </div>
       </div>
@@ -96,18 +98,35 @@ export default function AdminPage() {
         <div className="admin-row">
           <input
             className="cell-input"
-            placeholder="email@company.com"
+            placeholder="email@company.com *"
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
+          />
+          <input
+            className="cell-input"
+            placeholder="Name (optional)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+          />
+          <input
+            className="cell-input"
+            placeholder="Phone (optional)"
+            value={newPhone}
+            onChange={(e) => setNewPhone(e.target.value)}
           />
           <button
             className="btn"
             disabled={busy || !newEmail}
             onClick={async () => {
-              const r = await post({ action: "createUser", email: newEmail }, "User created.");
+              const r = await post(
+                { action: "createUser", email: newEmail, fullName: newName, phone: newPhone },
+                "User created."
+              );
               if (r?.ok) {
                 setCreated(r);
                 setNewEmail("");
+                setNewName("");
+                setNewPhone("");
               }
             }}
           >
@@ -136,12 +155,15 @@ export default function AdminPage() {
             <thead>
               <tr>
                 <th>Email</th>
+                <th>Name / phone</th>
                 <th>Balance</th>
                 <th>Rows</th>
                 <th>Active</th>
                 <th>Paid</th>
                 <th>Max rows</th>
-                <th>Samsara token</th>
+                <th title="That user's own Samsara API token, so they can track by truck # instead of pasting a Live Share link. Not a password — it comes from their Samsara account under Settings → API Tokens. Stored encrypted.">
+                  Samsara API token ⓘ
+                </th>
                 <th>Top up</th>
               </tr>
             </thead>
@@ -177,6 +199,10 @@ function UserRow({ u, post, busy }) {
   return (
     <tr>
       <td>{u.email}</td>
+      <td className="muted">
+        {u.full_name || "—"}
+        {u.phone ? <div className="sub">{u.phone}</div> : null}
+      </td>
       <td className={u.balance_cents < 200 ? "bal-low" : ""}>{money(u.balance_cents)}</td>
       <td>{u.stats.rows}</td>
       <td>{u.stats.active}</td>

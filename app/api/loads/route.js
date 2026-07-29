@@ -24,6 +24,11 @@ export async function GET() {
       balance_cents: profile?.balance_cents ?? 0,
       max_rows: profile?.max_rows ?? 30,
       checkin_email_default: profile?.checkin_email_default ?? false,
+      notify_email: profile?.notify_email ?? null,
+      full_name: profile?.full_name ?? null,
+      phone: profile?.phone ?? null,
+      // Presence only — the ciphertext never leaves the server.
+      has_samsara_token: !!profile?.samsara_token_enc,
     },
   });
 }

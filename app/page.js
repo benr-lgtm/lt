@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { parseLoads } from "../lib/parseLoads";
 import { getBrowserSupabase } from "../lib/supabaseBrowser";
 import Instructions from "./Instructions";
+import Settings from "./Settings";
 
 const MIN_ROWS = 15;
 const SPARE_ROWS = 5;
@@ -112,6 +113,7 @@ export default function Page() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   async function refresh() {
     const r = await fetch("/api/loads").then((x) => x.json());
@@ -119,6 +121,14 @@ export default function Page() {
     if (r.profile) setProfile(r.profile);
     if (r.error) setMessage("Couldn't load data: " + r.error);
   }
+
+  // A row that has everything it needs but no result yet is still being worked
+  // on by the background checker. Deriving this from the data (rather than a
+  // manual flag) means the banner clears itself the moment a result lands.
+  const checking = useMemo(
+    () => rows.some((r) => r.source && r.deadline && r.status === "unknown"),
+    [rows]
+  );
 
   useEffect(() => {
     (async () => {
@@ -128,11 +138,15 @@ export default function Page() {
         setLoading(false);
       }
     })();
-    // The server re-checks on its own schedule now, so the table just needs to
-    // pick up whatever the worker has written since we last looked.
-    const t = setInterval(refresh, 60000);
-    return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    // The server re-checks on its own schedule, so the table only needs to pick
+    // up what the worker has written. Poll faster while something is pending so
+    // the first result appears promptly.
+    const t = setInterval(refresh, checking ? 12000 : 60000);
+    return () => clearInterval(t);
+  }, [checking]);
 
   const filled = useMemo(() => rows.filter((r) => !rowEmpty(r)).length, [rows]);
   const maxRows = profile?.max_rows ?? 30;
@@ -243,6 +257,9 @@ export default function Page() {
       if (res.loads) setRows(mergeRows(res.loads));
       if (res.profile) setProfile(res.profile);
       setMessage("Saved. Tracking runs automatically — no need to press anything again.");
+      // Nudge the first refresh so a result can appear without waiting a full
+      // polling interval.
+      setTimeout(refresh, 4000);
     } catch (e) {
       setMessage("Save failed: " + e.message);
     } finally {
@@ -271,10 +288,9 @@ export default function Page() {
     <div className="wrap">
       <div className="header">
         <div>
-          <h1 className="title">Load Tracker</h1>
+          <h1 className="title">TruckOn.site</h1>
           <p className="subtitle">
-            Paste your load info, add the truck # or Samsara link, and we watch the
-            ETA and email you if it slips past your alert time.
+            Let us monitor your loads and alert you as soon as ETA is delayed.
           </p>
         </div>
         <div className="header-right">
@@ -283,26 +299,29 @@ export default function Page() {
               ${((profile.balance_cents || 0) / 100).toFixed(2)}
             </span>
           ) : null}
+          <button className="btn secondary" onClick={() => setShowSettings(true)}>
+            Settings
+          </button>
           <button className="btn secondary" onClick={signOut}>
             Sign out
           </button>
         </div>
       </div>
 
-      <div className="card">
-        <div className="instructions-bar">
-          <button className="btn ghost" onClick={() => setShowHelp((v) => !v)}>
-            {showHelp ? "Hide instructions ▲" : "Instructions ▼"}
-          </button>
-        </div>
-        {showHelp ? <Instructions /> : null}
+      {showSettings ? (
+        <Settings profile={profile} onClose={() => setShowSettings(false)} onSaved={refresh} />
+      ) : null}
 
+      <div className="card">
         <div className="toolbar">
           <span className="status-line">
             {loading ? "Loading…" : `${filled} of ${maxRows} rows used`}
             {overCap ? " — over your row limit, extra rows won't save" : ""}
           </span>
           <div className="toolbar-actions">
+            <button className="btn ghost pale" onClick={() => setShowHelp((v) => !v)}>
+              {showHelp ? "Instructions ▲" : "Instructions ▼"}
+            </button>
             <button className="btn secondary" onClick={clearAll} disabled={busy}>
               Clear all
             </button>
@@ -312,13 +331,26 @@ export default function Page() {
           </div>
         </div>
 
+        {showHelp ? <Instructions /> : null}
+
+        {/* Checking can take a minute or two. Without a visible working state
+            users assume the save failed and hammer the button. */}
+        {checking ? (
+          <p className="paste-result working">
+            <span className="spinner" />
+            Working on it — finding your trucks and calculating ETAs. This can take
+            a minute or two, and updates appear on their own. No need to press
+            anything.
+          </p>
+        ) : null}
+
         {lowBalance ? (
           <p className="paste-result err">
             Your balance is below $2, so new rows won&rsquo;t start tracking. Ask
             your administrator to top up.
           </p>
         ) : null}
-        {message ? (
+        {message && !checking ? (
           <p className={"paste-result" + (/fail|error|couldn/i.test(message) ? " err" : "")}>
             {message}
           </p>
