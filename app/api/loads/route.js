@@ -1,71 +1,84 @@
-import { getSupabase } from "../../../lib/supabase";
-import { looksLikeShareUrl } from "../../../lib/liveshare";
+import { getSessionUser, unauthorized } from "../../../lib/supabaseServer";
+import { looksLikeShareUrl } from "../../../lib/samsaraShare";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_ROWS = 500;
+const ROW_COST_CENTS = 200;
 
-// GET /api/loads -> all loads ordered by row position.
+// GET /api/loads -> this user's rows only (RLS also enforces it server-side).
 export async function GET() {
-  try {
-    const supabase = getSupabase();
-    const { data, error } = await supabase
-      .from("loads")
-      .select("*")
-      .order("position", { ascending: true });
+  const session = await getSessionUser();
+  if (!session) return unauthorized();
+  const { supabase, profile } = session;
 
-    if (error) throw error;
+  const { data, error } = await supabase
+    .from("loads")
+    .select("*")
+    .order("position", { ascending: true });
+  if (error) return Response.json({ error: error.message }, { status: 500 });
 
-    return Response.json({ loads: data || [] });
-  } catch (e) {
-    return Response.json({ error: e.message }, { status: 500 });
-  }
+  return Response.json({
+    loads: data || [],
+    profile: {
+      balance_cents: profile?.balance_cents ?? 0,
+      max_rows: profile?.max_rows ?? 30,
+      checkin_email_default: profile?.checkin_email_default ?? false,
+    },
+  });
 }
 
-// PUT /api/loads -> bulk save the table.
-// Body: { rows: [{ position, name, kind, deadline, source, destination }] }
-// `source` is either a truck # (API mode) or a pasted Live Share URL (scrape mode);
-// we route it to the right column automatically.
-// Changing the source, destination, deadline, or kind resets status and clears
-// the cached geocode so the row is re-evaluated on the next check.
+// PUT /api/loads -> bulk save the table for this user.
 export async function PUT(req) {
+  const session = await getSessionUser();
+  if (!session) return unauthorized();
+  const { supabase, user, profile } = session;
+
   try {
-    const supabase = getSupabase();
     const body = await req.json();
     const rows = Array.isArray(body.rows) ? body.rows : [];
+    const maxRows = profile?.max_rows ?? 30;
+    const balance = profile?.balance_cents ?? 0;
 
     const { data: existing } = await supabase.from("loads").select("*");
     const byPos = new Map((existing || []).map((r) => [r.position, r]));
 
     const upserts = [];
     const deletions = [];
+    let filled = 0;
+
     for (const r of rows) {
       const position = Number(r.position);
-      if (!Number.isInteger(position) || position < 0 || position >= MAX_ROWS)
-        continue;
-      const name = (r.name || "").trim() || null;
-      const kind = r.kind === "pickup" ? "pickup" : "delivery";
-      const deadline = (r.deadline || "").trim() || null;
-      const destination = (r.destination || "").trim() || null;
-      const notes = (r.notes || "").trim() || null;
+      if (!Number.isInteger(position) || position < 0 || position >= maxRows * 4) continue;
 
-      // Split the combined source into truck # vs Live Share URL.
+      const name = trim(r.name);
+      const kind = r.kind === "pickup" ? "pickup" : "delivery";
+      const appt_at = trim(r.appt_at);
+      const deadline = trim(r.deadline) || appt_at; // alert time defaults to the appointment
+      const destination = trim(r.destination);
+      const notes = trim(r.notes);
+      const alert_unlinked = !!r.alert_unlinked;
+      const checkin_enabled = !!r.checkin_enabled;
+
       const source = (r.source || "").trim();
       const isLink = source && looksLikeShareUrl(source);
       const truck_number = source && !isLink ? source : null;
       const samsara_url = isLink ? source : null;
 
       const prev = byPos.get(position);
-
-      // Fully empty row: delete it from the database instead of storing an
-      // all-null placeholder — keeps the table (and storage) clean.
       const empty =
-        !name && !truck_number && !samsara_url && !destination && !deadline && !notes;
+        !name && !truck_number && !samsara_url && !destination && !deadline && !appt_at && !notes;
       if (empty) {
         if (prev) deletions.push(position);
         continue;
       }
+
+      filled++;
+      // Enforce the plan's row cap server-side. The UI also blocks this, but the
+      // UI is not a security boundary.
+      if (filled > maxRows) break;
+
+      // Anything that changes what we're tracking invalidates the cached result.
       const changed =
         !prev ||
         prev.truck_number !== truck_number ||
@@ -74,61 +87,95 @@ export async function PUT(req) {
         prev.deadline !== deadline ||
         prev.kind !== kind;
 
+      const trackable = !!((truck_number || samsara_url) && deadline);
+      // A row already paid for stays scheduled; a new one needs funds.
+      const paidFor = !!prev?.charged_at;
+      const affordable = paidFor || balance >= ROW_COST_CENTS;
+
       const row = {
+        user_id: user.id,
         position,
         name,
         kind,
+        appt_at,
         deadline,
+        alert_unlinked,
         truck_number,
         samsara_url,
         destination,
         notes,
+        checkin_enabled,
+        checkin_due_at: null,
         updated_at: new Date().toISOString(),
       };
-      // IMPORTANT: every row in the bulk upsert must carry the SAME set of
-      // keys. PostgREST inserts the union of columns across all rows and
-      // fills missing keys with NULL — so if one changed row includes
-      // `status` and an unchanged row doesn't, the unchanged row's status
-      // gets nulled and the whole save fails the not-null constraint.
+
+      // Every row in a bulk upsert must carry the SAME key set: PostgREST
+      // inserts the union of columns across all rows and NULLs the gaps, so a
+      // partial key set on one row silently wipes columns on the others.
       if (changed) {
-        row.status = "unknown";
-        row.status_note = null;
-        row.alerted = false;
-        row.eta_iso = null;
-        row.eta_display = null;
-        row.truck_at = null;
-        if (!prev || prev.destination !== destination) {
-          row.dest_lat = null;
-          row.dest_lng = null;
-        } else {
-          row.dest_lat = prev.dest_lat ?? null;
-          row.dest_lng = prev.dest_lng ?? null;
-        }
+        Object.assign(row, {
+          status: trackable ? (affordable ? "unknown" : "unpaid") : "unknown",
+          status_note: null,
+          alerted: false,
+          eta_iso: null,
+          eta_display: null,
+          eta_provider: null,
+          truck_at: null,
+          last_lat: null,
+          last_lng: null,
+          last_place: null,
+          miles_left: null,
+          position_source: null,
+          position_precision: null,
+          link_tier: null,
+          arrived_at: null,
+          checkin_state: null,
+          checkin_prompted_at: null,
+          // Due immediately so a freshly saved row gets its first check on the
+          // next cron tick rather than waiting out a tier interval.
+          next_check_at: trackable && affordable ? new Date().toISOString() : null,
+          charged_at: prev?.charged_at ?? null,
+          cycle: prev?.cycle ?? 0,
+          dest_lat: prev && prev.destination === destination ? prev.dest_lat ?? null : null,
+          dest_lng: prev && prev.destination === destination ? prev.dest_lng ?? null : null,
+        });
       } else {
-        row.status = prev.status ?? "unknown";
-        row.status_note = prev.status_note ?? null;
-        row.alerted = prev.alerted ?? false;
-        row.eta_iso = prev.eta_iso ?? null;
-        row.eta_display = prev.eta_display ?? null;
-        row.truck_at = prev.truck_at ?? null;
-        row.dest_lat = prev.dest_lat ?? null;
-        row.dest_lng = prev.dest_lng ?? null;
+        Object.assign(row, {
+          status: prev.status ?? "unknown",
+          status_note: prev.status_note ?? null,
+          alerted: prev.alerted ?? false,
+          eta_iso: prev.eta_iso ?? null,
+          eta_display: prev.eta_display ?? null,
+          eta_provider: prev.eta_provider ?? null,
+          truck_at: prev.truck_at ?? null,
+          last_lat: prev.last_lat ?? null,
+          last_lng: prev.last_lng ?? null,
+          last_place: prev.last_place ?? null,
+          miles_left: prev.miles_left ?? null,
+          position_source: prev.position_source ?? null,
+          position_precision: prev.position_precision ?? null,
+          link_tier: prev.link_tier ?? null,
+          arrived_at: prev.arrived_at ?? null,
+          checkin_state: prev.checkin_state ?? null,
+          checkin_prompted_at: prev.checkin_prompted_at ?? null,
+          next_check_at: prev.next_check_at ?? null,
+          charged_at: prev.charged_at ?? null,
+          cycle: prev.cycle ?? 0,
+          dest_lat: prev.dest_lat ?? null,
+          dest_lng: prev.dest_lng ?? null,
+        });
       }
       upserts.push(row);
     }
 
     if (deletions.length) {
-      const { error } = await supabase
-        .from("loads")
-        .delete()
-        .in("position", deletions);
+      const { error } = await supabase.from("loads").delete().in("position", deletions);
       if (error) throw error;
     }
-
     if (upserts.length) {
       const { error } = await supabase
         .from("loads")
-        .upsert(upserts, { onConflict: "position" });
+        .upsert(upserts, { onConflict: "user_id,position" });
       if (error) throw error;
     }
 
@@ -136,20 +183,30 @@ export async function PUT(req) {
       .from("loads")
       .select("*")
       .order("position", { ascending: true });
-    return Response.json({ loads: data || [] });
+
+    const { data: fresh } = await supabase
+      .from("profiles")
+      .select("balance_cents,max_rows,checkin_email_default")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    return Response.json({ loads: data || [], profile: fresh || null });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }
 }
 
-// DELETE /api/loads -> remove every load (the "Clear all" button).
+// DELETE /api/loads -> clear this user's rows (never anyone else's).
 export async function DELETE() {
-  try {
-    const supabase = getSupabase();
-    const { error } = await supabase.from("loads").delete().gte("position", 0);
-    if (error) throw error;
-    return Response.json({ ok: true, loads: [] });
-  } catch (e) {
-    return Response.json({ error: e.message }, { status: 500 });
-  }
+  const session = await getSessionUser();
+  if (!session) return unauthorized();
+  const { supabase } = session;
+  const { error } = await supabase.from("loads").delete().gte("position", 0);
+  if (error) return Response.json({ error: error.message }, { status: 500 });
+  return Response.json({ ok: true, loads: [] });
+}
+
+function trim(v) {
+  const s = (v || "").trim();
+  return s || null;
 }

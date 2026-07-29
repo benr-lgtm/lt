@@ -3,92 +3,54 @@ import { getSupabase } from "../../../lib/supabase";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/health — quick diagnostics for setup.
-// GET /api/health?write=1 — additionally attempts a real upsert (same code path
-// as Save) into position 29 and reports the exact database error, if any.
-export async function GET(req) {
-  const wantWrite = new URL(req.url).searchParams.get("write") === "1";
-  return health(wantWrite);
-}
+// GET /api/health — public, and deliberately reports only whether things are
+// SET, never their values. Exists because the most common failure mode is a
+// missing env var surfacing as an opaque 500 somewhere unrelated.
+export async function GET() {
+  const set = (k) => ({ set: !!process.env[k] });
 
-async function health(wantWrite) {
   const env = {
-    NEXT_PUBLIC_SUPABASE_URL: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-    SAMSARA_API_TOKEN:
-      !!process.env.SAMSARA_API_TOKEN || !!process.env.SAMSARA_API_TOKENS,
-    MAPBOX_TOKEN: !!process.env.MAPBOX_TOKEN,
-    GOOGLE_MAPS_KEY: !!process.env.GOOGLE_MAPS_KEY,
-    RESEND_API_KEY: !!process.env.RESEND_API_KEY,
-    NOTIFY_EMAIL: !!process.env.NOTIFY_EMAIL,
-    CHECK_SECRET: !!process.env.CHECK_SECRET,
+    NEXT_PUBLIC_SUPABASE_URL: set("NEXT_PUBLIC_SUPABASE_URL"),
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: set("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+    SUPABASE_SERVICE_ROLE_KEY: set("SUPABASE_SERVICE_ROLE_KEY"),
+    ORS_API_KEY: set("ORS_API_KEY"),
+    MAPBOX_TOKEN: set("MAPBOX_TOKEN"),
+    RESEND_API_KEY: set("RESEND_API_KEY"),
+    RESEND_FROM: {
+      set: !!process.env.RESEND_FROM,
+      // Far and away the most likely reason someone reports "no emails arrive".
+      warning: /resend\.dev/.test(process.env.RESEND_FROM || "")
+        ? "Using the shared resend.dev sender — it only delivers to the Resend account owner. Verify a domain before inviting users."
+        : null,
+    },
+    ENCRYPTION_KEY: set("ENCRYPTION_KEY"),
+    CHECK_SECRET: set("CHECK_SECRET"),
+    ADMIN_PASSWORD: set("ADMIN_PASSWORD"),
+    ADMIN_SECRET: set("ADMIN_SECRET"),
+    NEXT_PUBLIC_APP_URL: set("NEXT_PUBLIC_APP_URL"),
   };
 
-  let database = "unknown";
+  const missing = Object.entries(env)
+    .filter(([, v]) => !v.set)
+    .map(([k]) => k);
+
+  let db = { ok: false, error: null, due: null };
   try {
-    if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-      database = "missing Supabase env vars";
-    } else {
-      const supabase = getSupabase();
-      // Select every column the app writes, so a missing column is caught here.
-      const { error } = await supabase
-        .from("loads")
-        .select(
-          "id,position,name,truck_number,samsara_url,kind,deadline,destination,dest_lat,dest_lng,eta_iso,eta_display,truck_at,status,status_note,alerted,updated_at"
-        )
-        .limit(1);
-      database = error ? `error: ${error.message}` : "ok";
-    }
+    const supabase = getSupabase();
+    const { count, error } = await supabase
+      .from("loads")
+      .select("id", { count: "exact", head: true })
+      .not("next_check_at", "is", null)
+      .lte("next_check_at", new Date().toISOString());
+    if (error) throw error;
+    // A number that stays high means the cron isn't reaching /api/check.
+    db = { ok: true, error: null, due: count ?? 0 };
   } catch (e) {
-    database = `error: ${e.message}`;
+    db = { ok: false, error: e.message, due: null };
   }
 
-  let writeTest = "skipped (add ?write=1)";
-  if (wantWrite && database === "ok") {
-    try {
-      const supabase = getSupabase();
-      const { error } = await supabase
-        .from("loads")
-        .upsert(
-          [
-            {
-              position: 29,
-              name: "health write test",
-              kind: "delivery",
-              updated_at: new Date().toISOString(),
-            },
-          ],
-          { onConflict: "position" }
-        );
-      writeTest = error ? `error: ${error.message}` : "ok";
-    } catch (e) {
-      writeTest = `error: ${e.message}`;
-    }
-  }
-
-  const hints = [];
-  if (typeof writeTest === "string" && writeTest.includes("ON CONFLICT"))
-    hints.push(
-      "Missing unique constraint on position. Run: create unique index if not exists loads_position_key on public.loads(position);"
-    );
-  if (typeof writeTest === "string" && /row-level security/i.test(writeTest))
-    hints.push(
-      "RLS is blocking writes. Run: alter table public.loads disable row level security; and confirm SUPABASE_SERVICE_ROLE_KEY is the service_role (secret) key."
-    );
-  if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY)
-    hints.push("Add Supabase env vars in Vercel, then redeploy.");
-  if (typeof database === "string" && database.includes("does not exist"))
-    hints.push("Run supabase-schema.sql in the Supabase SQL editor.");
-  if (!env.SAMSARA_API_TOKEN) hints.push("Add SAMSARA_API_TOKEN for truck# loads.");
-  if (!env.MAPBOX_TOKEN) hints.push("Add MAPBOX_TOKEN for ETA calculation.");
-  if (!env.NOTIFY_EMAIL || !env.RESEND_API_KEY)
-    hints.push("Add RESEND_API_KEY and NOTIFY_EMAIL for alerts.");
-
-  return Response.json({
-    ok: database === "ok",
-    database,
-    writeTest,
-    env,
-    hints,
-  });
+  return Response.json(
+    { ok: db.ok && missing.length === 0, env, missing, db },
+    { status: db.ok ? 200 : 500 }
+  );
 }
