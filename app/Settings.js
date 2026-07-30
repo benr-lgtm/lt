@@ -181,9 +181,15 @@ export default function Settings({ profile, onClose, onSaved }) {
         <label className="auth-label" htmlFor="ph">
           Phone <span className="opt">optional</span>
         </label>
+        {/* autoComplete="tel" rather than "off": Chrome ignores "off" on contact
+            fields and was filling this with the account email. Naming the field
+            honestly makes it offer a phone number instead of guessing. The API
+            also rejects an address here, since no attribute is a guarantee. */}
         <input
           id="ph"
-          autoComplete="off"
+          autoComplete="tel"
+          inputMode="tel"
+          type="tel"
           className="auth-input"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
