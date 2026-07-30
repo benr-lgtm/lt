@@ -164,10 +164,18 @@ async function checkOne(supabase, load, ctx) {
     }
 
     // ---- 6. alert on the flip to late, once ----
+    // `alerted` is only ever set once the provider has confirmed the send, so a
+    // refused email is retried on the next sweep instead of being lost. Whatever
+    // went wrong is written to status_note so it shows in the row's tooltip —
+    // silent alert failures are worse than no tracking at all, because the user
+    // believes they are covered.
     let alerted = load.alerted;
+    let alertNote = null;
     if (late && !load.alerted) {
       const to = ctx.profile?.notify_email;
-      if (to) {
+      if (!to) {
+        alertNote = "Late, but no notification email is set — add one in Settings.";
+      } else {
         try {
           await sendLateEmail({
             to,
@@ -182,6 +190,7 @@ async function checkOne(supabase, load, ctx) {
           out.emailed = true;
         } catch (e) {
           out.emailError = e.message;
+          alertNote = `Late alert not sent: ${String(e.message).slice(0, 150)}`;
         }
       }
     }
@@ -194,7 +203,7 @@ async function checkOne(supabase, load, ctx) {
       charged: charge?.charged || false,
       patch: {
         status,
-        status_note: null,
+        status_note: alertNote,
         alerted,
         eta_iso: etaIso,
         eta_display: formatEta(etaIso, tz),
@@ -323,6 +332,7 @@ async function sweepCheckins(supabase) {
     .limit(50);
 
   let prompted = 0;
+  const emailErrors = [];
   for (const load of rows || []) {
     await supabase
       .from("loads")
@@ -338,8 +348,11 @@ async function sweepCheckins(supabase) {
     if (profile?.checkin_email_default && profile.notify_email) {
       try {
         await sendCheckinEmail({ to: profile.notify_email, load });
-      } catch {
-        /* an email failure must not block the in-app prompt */
+      } catch (e) {
+        // An email failure still must not block the in-app prompt, but it is
+        // reported rather than discarded — the previous bare `catch {}` is why
+        // a broken mail provider could go unnoticed indefinitely.
+        emailErrors.push({ id: load.id, error: String(e.message).slice(0, 150) });
       }
     }
   }
@@ -358,7 +371,11 @@ async function sweepCheckins(supabase) {
       .eq("id", m.id);
   }
 
-  return { prompted, reprompted: (missed || []).length };
+  return {
+    prompted,
+    reprompted: (missed || []).length,
+    ...(emailErrors.length ? { emailErrors } : {}),
+  };
 }
 
 function groupBy(list, fn) {
