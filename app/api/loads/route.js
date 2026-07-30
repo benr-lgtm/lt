@@ -63,6 +63,9 @@ export async function PUT(req) {
       const destination = trim(r.destination);
       const notes = trim(r.notes);
       const alert_unlinked = !!r.alert_unlinked;
+      // Absent means "not sent by an older client", which must not silently
+      // disable alerting — only an explicit false turns it off.
+      const alert_enabled = r.alert_enabled !== false;
       const checkin_enabled = !!r.checkin_enabled;
 
       const source = (r.source || "").trim();
@@ -109,6 +112,7 @@ export async function PUT(req) {
         samsara_url,
         destination,
         notes,
+        alert_enabled,
         checkin_enabled,
         checkin_due_at: null,
         updated_at: new Date().toISOString(),
