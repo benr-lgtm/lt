@@ -225,10 +225,18 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 
 /* Half-width columns: Facility name and both date columns were eating
    horizontal room that Last location / Miles left now need. */
-.col-half { width: 150px; }
+/* Narrowed to pay for the new Check-in column. The datetime inputs have a
+   fixed intrinsic width, so this is about as tight as they go before the
+   browser clips the AM/PM. */
+.col-half { width: 128px; }
+/* The column `width` above is only a hint: under table-layout:auto the browser
+   sizes these columns to the datetime input's intrinsic width, which is why
+   DATE & TIME rendered wider than its old 150px. Shrinking the type and padding
+   is what actually narrows them — and it can't clip, because the browser still
+   fits the full text. */
 .col-half .cell-input.small,
-.col-half input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 13px; padding: 8px 9px; }
-.col-half .kind-select { width: 62px; font-size: 12px; padding: 8px 6px; }
+.col-half input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 12px; padding: 7px 6px; }
+.col-half .kind-select { width: 52px; font-size: 12px; padding: 7px 4px; }
 .deadline-cell input[type="datetime-local"] { flex: 1; min-width: 0; }
 .alert-cell { display: flex; gap: 4px; align-items: center; }
 .alert-cell input { flex: 1; min-width: 0; }
@@ -239,7 +247,7 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .link-btn:hover { opacity: 1; }
 
 .col-loc { width: 160px; font-size: 13px; }
-.col-miles { width: 84px; font-size: 13px; text-align: right; }
+.col-miles { width: 62px; font-size: 13px; text-align: right; }
 .muted { color: var(--muted); }
 
 .badge.arrived { color: #0b6bcb; background: #e6f0fb; }
@@ -248,11 +256,18 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 /* ---------- check-in ---------- */
 .row-checkin { background: #fff8e6 !important; }
 .row-missed  { background: #fdeceb !important; box-shadow: inset 3px 0 0 var(--red); }
+/* Check-in now has its own column, so the prompt sits label-over-buttons and
+   the two buttons share a row — keeps the row height unchanged instead of
+   growing it by a third button's worth. */
+.col-checkin { width: 132px; }
 .checkin-box { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.checkin-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .checkin-label { font-size: 11px; font-weight: 700; color: var(--red); text-transform: uppercase; letter-spacing: 0.03em; }
+.checkin-done { font-size: 12px; font-weight: 600; color: var(--green); white-space: nowrap; }
 .chip {
   font-size: 12px; font-weight: 600; font-family: inherit;
-  border-radius: 999px; padding: 4px 10px; cursor: pointer; border: 1px solid;
+  border-radius: 999px; padding: 4px 9px; cursor: pointer; border: 1px solid;
+  white-space: nowrap;
 }
 .chip.ok { color: var(--green); background: var(--green-bg); border-color: #bfe6d0; }
 .chip.no { color: var(--red); background: var(--red-bg); border-color: #f3c9c4; }
