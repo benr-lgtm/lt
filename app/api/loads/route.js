@@ -20,16 +20,14 @@ export async function GET() {
 
   return Response.json({
     loads: data || [],
-    profile: {
-      balance_cents: profile?.balance_cents ?? 0,
-      max_rows: profile?.max_rows ?? 30,
-      checkin_email_default: profile?.checkin_email_default ?? false,
-      notify_email: profile?.notify_email ?? null,
-      full_name: profile?.full_name ?? null,
-      phone: profile?.phone ?? null,
-      // Presence only — the ciphertext never leaves the server.
-      has_samsara_token: !!profile?.samsara_token_enc,
-    },
+    // Return the whole profile (minus the token ciphertext) rather than a
+    // hand-picked subset. The subset was a trap: Settings is populated from this
+    // payload, so every field missing here rendered blank and then got SAVED
+    // blank — which is how the registered email vanished from Settings and how
+    // the extra recipient addresses would have been wiped on the next save.
+    // It's the caller's own row under RLS, so there is nothing to withhold
+    // except the ciphertext.
+    profile: publicProfile(profile),
   });
 }
 
@@ -195,11 +193,14 @@ export async function PUT(req) {
 
     const { data: fresh } = await supabase
       .from("profiles")
-      .select("balance_cents,max_rows,checkin_email_default")
+      // Same reasoning as GET: the client replaces its whole profile object with
+      // this, so a narrow select here would silently blank the recipient fields
+      // in the UI after an ordinary table save.
+      .select("*")
       .eq("id", user.id)
       .maybeSingle();
 
-    return Response.json({ loads: data || [], profile: fresh || null });
+    return Response.json({ loads: data || [], profile: publicProfile(fresh) });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }
@@ -218,4 +219,12 @@ export async function DELETE() {
 function trim(v) {
   const s = (v || "").trim();
   return s || null;
+}
+
+// Everything except the encrypted Samsara token, which must never reach the
+// browser — only whether one is stored.
+function publicProfile(p) {
+  if (!p) return null;
+  const { samsara_token_enc, ...rest } = p;
+  return { ...rest, has_samsara_token: !!samsara_token_enc };
 }
