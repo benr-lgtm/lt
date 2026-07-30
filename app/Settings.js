@@ -81,7 +81,16 @@ export default function Settings({ profile, onClose, onSaved }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+      {/* autoComplete="off" on the form and every field: Chrome was dropping the
+          account email into the Phone box (it skips the disabled registered-email
+          input and fills the next text field it likes), and that guess would have
+          been saved as the user's phone number on the next Save. */}
+      <form
+        className="modal"
+        autoComplete="off"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+      >
         <h2 className="modal-title">Settings</h2>
 
         <label className="auth-label">Registered email</label>
@@ -96,6 +105,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
         <input
           id="ne"
+          autoComplete="off"
           className="auth-input"
           type="email"
           value={notifyEmail}
@@ -115,6 +125,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
         <input
           id="cc1"
+          autoComplete="off"
           className="auth-input"
           type="email"
           placeholder="name@company.com"
@@ -135,6 +146,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
         <input
           id="cc2"
+          autoComplete="off"
           className="auth-input"
           type="email"
           placeholder="name@company.com"
@@ -160,6 +172,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
         <input
           id="fn"
+          autoComplete="off"
           className="auth-input"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
@@ -170,6 +183,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
         <input
           id="ph"
+          autoComplete="off"
           className="auth-input"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
@@ -180,6 +194,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
         <input
           id="st"
+          autoComplete="off"
           className="auth-input"
           type="password"
           placeholder={profile?.has_samsara_token ? "•••••••• already saved" : "only needed for truck # tracking"}
