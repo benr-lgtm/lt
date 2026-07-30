@@ -32,6 +32,17 @@ export default function Settings({ profile, onClose, onSaved }) {
   const [samsaraToken, setSamsaraToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Set by every field. Once the user has typed anything, a click on the
+  // backdrop stops dismissing the dialog and warns instead — losing a half-typed
+  // recipient list to a stray click just outside the panel is a bad trade for
+  // the convenience of click-outside-to-close.
+  const [dirty, setDirty] = useState(false);
+  const [warnUnsaved, setWarnUnsaved] = useState(false);
+
+  function requestClose() {
+    if (!dirty) return onClose?.();
+    setWarnUnsaved(true);
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -80,7 +91,7 @@ export default function Settings({ profile, onClose, onSaved }) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={requestClose}>
       {/* autoComplete="off" on the form and every field: Chrome was dropping the
           account email into the Phone box (it skips the disabled registered-email
           input and fills the next text field it likes), and that guess would have
@@ -89,6 +100,12 @@ export default function Settings({ profile, onClose, onSaved }) {
         className="modal"
         autoComplete="off"
         onClick={(e) => e.stopPropagation()}
+        // One listener on the form rather than touching every field: input
+        // events bubble, so any edit anywhere marks the dialog dirty.
+        onInput={() => {
+          setDirty(true);
+          setWarnUnsaved(false);
+        }}
         onSubmit={submit}
       >
         <h2 className="modal-title">Settings</h2>
@@ -224,6 +241,12 @@ export default function Settings({ profile, onClose, onSaved }) {
         </label>
 
         {error ? <p className="auth-error">{error}</p> : null}
+        {warnUnsaved ? (
+          <p className="auth-error">
+            You have unsaved changes — press <b>Save settings</b>, or{" "}
+            <b>Cancel</b> to discard them.
+          </p>
+        ) : null}
 
         <div className="modal-actions">
           <button type="button" className="btn secondary" onClick={onClose} disabled={busy}>
