@@ -105,6 +105,24 @@ input::placeholder { color: #b6bcc7; }
 .paste-result.err { color: var(--red); background: var(--red-bg); }
 
 .table-scroll { width: 100%; overflow-x: auto; }
+
+/* Second horizontal scrollbar above the header, kept in sync with the real one
+   by syncScroll(). It scrolls a zero-content spacer of the table's exact width;
+   a visible min-height is required or some browsers collapse the track away. */
+.table-scroll-top {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--line);
+}
+.table-scroll-ghost { height: 1px; }
+.table-scroll-top::-webkit-scrollbar { height: 10px; }
+.table-scroll-top::-webkit-scrollbar-thumb {
+  background: #c9ccd2;
+  border-radius: 5px;
+}
+.table-scroll-top::-webkit-scrollbar-track { background: #f2f3f5; }
+
 table { width: 100%; border-collapse: collapse; min-width: 1200px; }
 
 thead th {
@@ -242,6 +260,44 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .notes-cell { display: flex; gap: 6px; align-items: center; }
 .checkin-toggle { display: flex; align-items: center; gap: 2px; cursor: pointer; font-size: 14px; }
 .checkin-toggle input { width: 14px; height: 14px; }
+
+/* "Email alerts" column: alert / remind stacked, each with a tappable hint. */
+.col-mail { width: 104px; }
+.mail-toggle { position: relative; display: flex; align-items: center; gap: 5px; line-height: 1.9; }
+.mail-toggle input { width: 14px; height: 14px; flex: none; cursor: pointer; }
+.mail-toggle-word {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.mail-tip {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  z-index: 5;
+  width: max-content;
+  max-width: 210px;
+  padding: 6px 9px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #fff;
+  background: #23262b;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+/* Per-address alert/remind switches in Settings. */
+.mail-flags { display: flex; gap: 16px; margin: -8px 0 14px; }
+.mail-flags label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.mail-flags input { width: 15px; height: 15px; }
+.mail-flags.disabled { opacity: 0.45; }
+.mail-flags.disabled label { cursor: default; }
 
 /* ---------- instructions ---------- */
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--line-strong); padding: 8px 16px; font-size: 13px; }

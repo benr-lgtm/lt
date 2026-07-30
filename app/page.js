@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { parseLoads } from "../lib/parseLoads";
 import { getBrowserSupabase } from "../lib/supabaseBrowser";
 import Instructions from "./Instructions";
@@ -21,6 +21,7 @@ function blankRow(position) {
     alert_unlinked: false,
     destination: "",
     notes: "",
+    alert_enabled: true,
     checkin_enabled: false,
     checkin_state: null,
     status: "unknown",
@@ -65,6 +66,9 @@ function mergeRows(loads) {
       alert_unlinked: !!l.alert_unlinked,
       destination: l.destination || "",
       notes: l.notes || "",
+      // Rows saved before this column existed come back undefined; treat that as
+      // alerting so nobody's existing loads go quiet after the upgrade.
+      alert_enabled: l.alert_enabled !== false,
       checkin_enabled: !!l.checkin_enabled,
       checkin_state: l.checkin_state || null,
       status: l.status || "unknown",
@@ -103,6 +107,39 @@ function StatusBadge({ row }) {
         {sub ? <span className="eta-note">{sub}</span> : null}
       </span>
     </span>
+  );
+}
+
+// One checkbox in the "Email alerts" column.
+//
+// The hint has to reach touch users too, and a plain `title` never fires on a
+// phone. So the checkbox and its word are separate controls: tapping the box
+// toggles, tapping the word reveals the hint. Wrapping both in one <label>
+// would have made the word toggle the box, leaving no way to just read it.
+function MailToggle({ label, hint, checked, onChange }) {
+  const id = useId();
+  const [showTip, setShowTip] = useState(false);
+  return (
+    <div className="mail-toggle">
+      <input
+        id={id}
+        type="checkbox"
+        aria-label={hint}
+        checked={!!checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <button
+        type="button"
+        className="mail-toggle-word"
+        title={hint}
+        aria-expanded={showTip}
+        onClick={() => setShowTip((s) => !s)}
+        onBlur={() => setShowTip(false)}
+      >
+        {label}
+      </button>
+      {showTip ? <span className="mail-tip">{hint}</span> : null}
+    </div>
   );
 }
 
@@ -246,6 +283,7 @@ export default function Page() {
         source: r.source,
         destination: r.destination,
         notes: r.notes,
+        alert_enabled: r.alert_enabled,
         checkin_enabled: r.checkin_enabled,
       }));
       const res = await fetch("/api/loads", {
@@ -283,6 +321,38 @@ export default function Page() {
 
   const busy = saving || loading;
   const lowBalance = profile && profile.balance_cents < 200;
+
+  // The table is wider than the viewport and the useful columns now sit at both
+  // ends, so a bottom-only scrollbar means scrolling to the bottom of a 20-row
+  // table just to pan sideways. Mirror it above the header and keep the two in
+  // step. The guard flag stops each one's programmatic scroll from echoing back.
+  const topBarRef = useRef(null);
+  const bodyRef = useRef(null);
+  const tableRef = useRef(null);
+  const syncing = useRef(false);
+  const [tableWidth, setTableWidth] = useState(0);
+
+  useEffect(() => {
+    const el = tableRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setTableWidth(el.scrollWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [rows.length]);
+
+  function syncScroll(from) {
+    if (syncing.current) return;
+    const src = from === "top" ? topBarRef.current : bodyRef.current;
+    const dst = from === "top" ? bodyRef.current : topBarRef.current;
+    if (!src || !dst) return;
+    syncing.current = true;
+    dst.scrollLeft = src.scrollLeft;
+    requestAnimationFrame(() => {
+      syncing.current = false;
+    });
+  }
 
   return (
     <div className="wrap">
@@ -356,20 +426,30 @@ export default function Page() {
           </p>
         ) : null}
 
-        <div className="table-scroll">
-          <table>
+        <div
+          className="table-scroll-top"
+          ref={topBarRef}
+          onScroll={() => syncScroll("top")}
+          aria-hidden="true"
+        >
+          <div className="table-scroll-ghost" style={{ width: tableWidth || "100%" }} />
+        </div>
+
+        <div className="table-scroll" ref={bodyRef} onScroll={() => syncScroll("body")}>
+          <table ref={tableRef}>
             <thead>
               <tr>
                 <th className="col-clear" />
                 <th className="col-idx">#</th>
+                <th className="col-loc">Last location</th>
+                <th className="col-miles">Miles left</th>
+                <th className="col-status">Status</th>
                 <th>Truck # or link</th>
                 <th className="col-half">Facility name</th>
                 <th>PASTE HERE 🔽</th>
                 <th className="col-half">DATE &amp; TIME</th>
                 <th className="col-half">ALERT IF LATE THAN…</th>
-                <th className="col-loc">Last location</th>
-                <th className="col-miles">Miles left</th>
-                <th className="col-status">Status</th>
+                <th className="col-mail">Email alerts</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -392,6 +472,36 @@ export default function Page() {
                       ) : null}
                     </td>
                     <td className="col-idx">{i + 1}</td>
+                    <td className="col-loc">
+                      <span className="muted">{r.last_place || "—"}</span>
+                    </td>
+                    <td className="col-miles">
+                      {typeof r.miles_left === "number" ? (
+                        <span title={r.position_precision === "city" ? "Approximate — city-level position" : ""}>
+                          {Math.round(r.miles_left)}
+                          {r.position_precision === "city" ? "≈" : ""}
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td className="col-status">
+                      {needsCheckin ? (
+                        <div className="checkin-box">
+                          <span className="checkin-label">
+                            {r.checkin_state === "missed" ? "Not checked in!" : "Check in?"}
+                          </span>
+                          <button className="chip ok" onClick={() => checkin(r, "checked_in")}>
+                            ✓ Checked IN
+                          </button>
+                          <button className="chip no" onClick={() => checkin(r, "missed")}>
+                            ✗ Didn&rsquo;t
+                          </button>
+                        </div>
+                      ) : (
+                        <StatusBadge row={r} />
+                      )}
+                    </td>
                     <td>
                       <input
                         className="source-input"
@@ -454,53 +564,27 @@ export default function Page() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="col-loc">
-                      <span className="muted">{r.last_place || "—"}</span>
-                    </td>
-                    <td className="col-miles">
-                      {typeof r.miles_left === "number" ? (
-                        <span title={r.position_precision === "city" ? "Approximate — city-level position" : ""}>
-                          {Math.round(r.miles_left)}
-                          {r.position_precision === "city" ? "≈" : ""}
-                        </span>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td className="col-status">
-                      {needsCheckin ? (
-                        <div className="checkin-box">
-                          <span className="checkin-label">
-                            {r.checkin_state === "missed" ? "Not checked in!" : "Check in?"}
-                          </span>
-                          <button className="chip ok" onClick={() => checkin(r, "checked_in")}>
-                            ✓ Checked IN
-                          </button>
-                          <button className="chip no" onClick={() => checkin(r, "missed")}>
-                            ✗ Didn&rsquo;t
-                          </button>
-                        </div>
-                      ) : (
-                        <StatusBadge row={r} />
-                      )}
+                    <td className="col-mail">
+                      <MailToggle
+                        label="alert"
+                        hint="alert me if ETA is late"
+                        checked={r.alert_enabled}
+                        onChange={(v) => update(i, "alert_enabled", v)}
+                      />
+                      <MailToggle
+                        label="remind"
+                        hint="remind me 5 min before del appt"
+                        checked={r.checkin_enabled}
+                        onChange={(v) => update(i, "checkin_enabled", v)}
+                      />
                     </td>
                     <td>
-                      <div className="notes-cell">
-                        <input
-                          className="notes-input"
-                          placeholder="Notes"
-                          value={r.notes}
-                          onChange={(e) => update(i, "notes", e.target.value)}
-                        />
-                        <label className="checkin-toggle" title="Remind me to confirm the driver checked in">
-                          <input
-                            type="checkbox"
-                            checked={r.checkin_enabled}
-                            onChange={(e) => update(i, "checkin_enabled", e.target.checked)}
-                          />
-                          <span>⏰</span>
-                        </label>
-                      </div>
+                      <input
+                        className="notes-input"
+                        placeholder="Notes"
+                        value={r.notes}
+                        onChange={(e) => update(i, "notes", e.target.value)}
+                      />
                     </td>
                   </tr>
                 );
