@@ -4,12 +4,34 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { getBrowserSupabase } from "../../lib/supabaseBrowser";
 
+const SIGNUP_EMAIL = "bakhtiyor1chi@gmail.com";
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  async function copyEmail() {
+    try {
+      await navigator.clipboard.writeText(SIGNUP_EMAIL);
+    } catch {
+      // clipboard API needs HTTPS + permission; fall back to selecting the text
+      // so the visitor can still copy it by hand rather than hitting a dead end.
+      const el = document.getElementById("signup-email");
+      if (el) {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -74,6 +96,22 @@ export default function LoginPage() {
           need access.
         </p>
       </form>
+
+      {/* Outside the <form> on purpose: a <button> inside it would submit the
+          sign-in form on Enter, and the mailto link would look like a login
+          attempt. */}
+      <div className="signup-cta">
+        <p className="signup-cta-text">
+          Email me to get new account credentials and a{" "}
+          <b>$50 signup bonus</b>:
+        </p>
+        <a id="signup-email" className="signup-email" href={`mailto:${SIGNUP_EMAIL}`}>
+          {SIGNUP_EMAIL}
+        </a>
+        <button type="button" className="btn secondary copy-btn" onClick={copyEmail}>
+          {copied ? "Copied ✓" : "Copy email"}
+        </button>
+      </div>
     </div>
   );
 }
