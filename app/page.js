@@ -444,6 +444,7 @@ export default function Page() {
                 <th className="col-loc">Last location</th>
                 <th className="col-miles">Miles left</th>
                 <th className="col-status">Status</th>
+                <th className="col-checkin">Check-in</th>
                 <th>Truck # or link</th>
                 <th className="col-half">Facility name</th>
                 <th>PASTE HERE 🔽</th>
@@ -485,21 +486,34 @@ export default function Page() {
                         <span className="muted">—</span>
                       )}
                     </td>
+                    {/* Status always shows the ETA. The check-in prompt used to
+                        replace it, which meant that the moment a driver needed
+                        chasing you lost sight of whether the load was late —
+                        exactly when you most want both facts at once. */}
                     <td className="col-status">
+                      <StatusBadge row={r} />
+                    </td>
+                    <td className="col-checkin">
                       {needsCheckin ? (
                         <div className="checkin-box">
                           <span className="checkin-label">
                             {r.checkin_state === "missed" ? "Not checked in!" : "Check in?"}
                           </span>
-                          <button className="chip ok" onClick={() => checkin(r, "checked_in")}>
-                            ✓ Checked IN
-                          </button>
-                          <button className="chip no" onClick={() => checkin(r, "missed")}>
-                            ✗ Didn&rsquo;t
-                          </button>
+                          <div className="checkin-actions">
+                            <button className="chip ok" onClick={() => checkin(r, "checked_in")}>
+                              ✓ IN
+                            </button>
+                            <button className="chip no" onClick={() => checkin(r, "missed")}>
+                              ✗ Didn&rsquo;t
+                            </button>
+                          </div>
                         </div>
+                      ) : r.checkin_state === "checked_in" ? (
+                        <span className="checkin-done" title="Driver confirmed checked in">
+                          ✓ Checked in
+                        </span>
                       ) : (
-                        <StatusBadge row={r} />
+                        <span className="muted">—</span>
                       )}
                     </td>
                     <td>
@@ -611,3 +625,4 @@ export default function Page() {
     </div>
   );
 }
+
