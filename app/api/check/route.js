@@ -9,7 +9,7 @@ import {
 } from "../../../lib/samsara";
 import { fetchShareLocation } from "../../../lib/samsaraShare";
 import { geocode, estimateEta, haversineMiles, ARRIVAL_MILES } from "../../../lib/maps";
-import { sendLateEmail, sendCheckinEmail } from "../../../lib/email";
+import { sendLateEmail, sendCheckinEmail, recipientsFor } from "../../../lib/email";
 import { nextCheckAt, slackMsFrom, graceMs } from "../../../lib/scheduler";
 import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
@@ -74,7 +74,11 @@ async function userContext(supabase, userId, loads) {
   const ctx = { gpsByName: null, gpsError: null, profile: null };
   const { data: profile } = await supabase
     .from("profiles")
-    .select("id,balance_cents,notify_email,checkin_email_default,samsara_token_enc")
+    .select(
+      "id,balance_cents,samsara_token_enc,checkin_email_default," +
+        "notify_email,notify_alert,notify_remind," +
+        "cc1_email,cc1_alert,cc1_remind,cc2_email,cc2_alert,cc2_remind"
+    )
     .eq("id", userId)
     .maybeSingle();
   ctx.profile = profile || null;
@@ -171,13 +175,16 @@ async function checkOne(supabase, load, ctx) {
     // believes they are covered.
     let alerted = load.alerted;
     let alertNote = null;
-    if (late && !load.alerted) {
-      const to = ctx.profile?.notify_email;
-      if (!to) {
-        alertNote = "Late, but no notification email is set — add one in Settings.";
+    // alert_enabled is the row's own opt-out; older rows predate the column and
+    // read as undefined, which must count as enabled rather than silently off.
+    const alertOn = load.alert_enabled !== false;
+    if (late && alertOn && !load.alerted) {
+      const to = recipientsFor(ctx.profile, "alert");
+      if (to.length === 0) {
+        alertNote = "Late, but no alert recipient is enabled — check Settings.";
       } else {
         try {
-          await sendLateEmail({
+          const res = await sendLateEmail({
             to,
             load: {
               ...load,
@@ -186,8 +193,19 @@ async function checkOne(supabase, load, ctx) {
               miles_left: est.milesLeft,
             },
           });
-          alerted = true;
-          out.emailed = true;
+          out.emailed = res.sent;
+          // Marked alerted as soon as at least one copy landed: retrying to fix
+          // one bad address would re-send to everyone who already got it, and
+          // duplicate late alerts erode trust in the alert faster than a missing
+          // one does. The failures are surfaced on the row instead.
+          if (res.sent.length > 0) alerted = true;
+          if (res.errors.length > 0) {
+            out.emailErrors = res.errors;
+            const first = res.errors[0];
+            alertNote =
+              `Alert not delivered to ${first.to}: ${String(first.error).slice(0, 110)}` +
+              (res.errors.length > 1 ? ` (+${res.errors.length - 1} more)` : "");
+          }
         } catch (e) {
           out.emailError = e.message;
           alertNote = `Late alert not sent: ${String(e.message).slice(0, 150)}`;
@@ -342,12 +360,18 @@ async function sweepCheckins(supabase) {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("notify_email,checkin_email_default")
+      .select(
+        "notify_email,notify_alert,notify_remind,cc1_email,cc1_alert,cc1_remind,cc2_email,cc2_alert,cc2_remind"
+      )
       .eq("id", load.user_id)
       .maybeSingle();
-    if (profile?.checkin_email_default && profile.notify_email) {
+    const to = recipientsFor(profile, "remind");
+    if (to.length > 0) {
       try {
-        await sendCheckinEmail({ to: profile.notify_email, load });
+        const res = await sendCheckinEmail({ to, load });
+        for (const e of res.errors) {
+          emailErrors.push({ id: load.id, to: e.to, error: String(e.error).slice(0, 150) });
+        }
       } catch (e) {
         // An email failure still must not block the in-app prompt, but it is
         // reported rather than discarded — the previous bare `catch {}` is why
