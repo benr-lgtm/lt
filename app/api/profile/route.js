@@ -48,13 +48,24 @@ export async function PUT(req) {
       cc[`${slot}_remind`] = raw ? !!body[`${slot}_remind`] : false;
     }
 
+    // Browsers autofill the phone box with an email address more often than you
+    // would hope. Saving that would quietly corrupt the field, so reject it here
+    // instead of trusting the markup to prevent it.
+    const phone = str(body.phone);
+    if (phone && phone.includes("@")) {
+      return Response.json(
+        { error: "That looks like an email address, not a phone number." },
+        { status: 400 }
+      );
+    }
+
     const patch = {
       notify_email,
       notify_alert: !!body.notify_alert,
       notify_remind: !!body.notify_remind,
       ...cc,
       full_name: str(body.full_name),
-      phone: str(body.phone),
+      phone,
       checkin_email_default: !!body.checkin_email_default,
     };
 
