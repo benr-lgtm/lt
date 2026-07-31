@@ -6,6 +6,23 @@ export const dynamic = "force-dynamic";
 // GET /api/health — public, and deliberately reports only whether things are
 // SET, never their values. Exists because the most common failure mode is a
 // missing env var surfacing as an opaque 500 somewhere unrelated.
+// "TruckOn <alerts@truckon.site>" -> "TruckOn". Safe to expose: it is on the
+// From line of every email already.
+function senderName(from) {
+  if (!from) return null;
+  const m = String(from).match(/^\s*"?([^"<]+?)"?\s*</);
+  return m ? m[1].trim() : String(from).trim();
+}
+
+// The display name should look like the product. Anything else is almost
+// certainly a leftover from a rename that never reached the environment.
+function staleBrandWarning(from) {
+  const name = senderName(from);
+  if (!name) return null;
+  if (/truckon/i.test(name)) return null;
+  return `Emails are being sent as "${name}", which doesn't look like TruckOn. RESEND_FROM lives in the environment, not the code — update it in your hosting provider's environment variables.`;
+}
+
 export async function GET() {
   const set = (k) => ({ set: !!process.env[k] });
 
@@ -31,10 +48,15 @@ export async function GET() {
     RESEND_API_KEY: set("RESEND_API_KEY"),
     RESEND_FROM: {
       set: !!process.env.RESEND_FROM,
+      value: senderName(process.env.RESEND_FROM),
       // Far and away the most likely reason someone reports "no emails arrive".
       warning: /resend\.dev/.test(process.env.RESEND_FROM || "")
         ? "Using the shared resend.dev sender — it only delivers to the Resend account owner. Verify a domain before inviting users."
-        : null,
+        : // The display name is what recipients actually see, and it lives in
+          // the environment rather than the code — so renaming the app does not
+          // change it, and a stale name can sit in production indefinitely
+          // looking correct from the inside. Surface the mismatch here.
+          staleBrandWarning(process.env.RESEND_FROM),
     },
     ENCRYPTION_KEY: set("ENCRYPTION_KEY"),
     CHECK_SECRET: set("CHECK_SECRET"),

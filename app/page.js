@@ -42,9 +42,31 @@ function timeStamp(iso) {
   const d = new Date(String(iso).replace(" ", "T"));
   if (!Number.isFinite(d.getTime())) return null;
   return {
-    time: d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+    // Zone named on the time line. Every other time in this table is in the
+    // DESTINATION's zone, so an unlabelled local time here is a trap — these
+    // two columns are the only ones on the viewer's own clock.
+    time: `${d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    })} ${localZone()}`,
     date: d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" }),
   };
+}
+
+// The viewer's own timezone abbreviation, e.g. "CDT". Computed once per render
+// pass rather than per cell.
+let _zoneCache = null;
+function localZone() {
+  if (_zoneCache) return _zoneCache;
+  try {
+    _zoneCache =
+      new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+        .formatToParts(new Date())
+        .find((p) => p.type === "timeZoneName")?.value || "";
+  } catch {
+    _zoneCache = "";
+  }
+  return _zoneCache;
 }
 
 // Split an ETA into clock time and date, in the DESTINATION's timezone.
@@ -89,7 +111,10 @@ function nextCheckInfo(row) {
   const when =
     next <= new Date()
       ? "due now"
-      : next.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      : `${next.toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+        })} ${localZone()}`;
 
   let every = "";
   if (row.updated_at) {
@@ -571,10 +596,8 @@ export default function Page() {
                 <th className="col-status">Status</th>
                 <th className="col-checkin">Check-in</th>
                 <th>Truck # or link</th>
-                <th className="col-half">Facility name</th>
-                <th>PASTE HERE 🔽</th>
-                <th className="col-half">DATE &amp; TIME</th>
-                <th className="col-half">ALERT IF LATE THAN…</th>
+                <th className="col-stop">PASTE HERE 🔽</th>
+                <th className="col-half">ALERT IF LATER THAN…</th>
                 <th className="col-mail">Email alerts</th>
                 <th>Notes</th>
               </tr>
@@ -689,44 +712,63 @@ export default function Page() {
                         onChange={(e) => update(i, "source", e.target.value)}
                       />
                     </td>
-                    <td className="col-half">
-                      <input
-                        className="cell-input small"
-                        placeholder="(from paste)"
-                        value={r.name}
-                        onChange={(e) => update(i, "name", e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="dest-input"
-                        placeholder="Paste the whole load block here"
-                        value={r.destination}
-                        onChange={(e) => update(i, "destination", e.target.value)}
-                        onPaste={(e) => handleDestPaste(i, e)}
-                      />
-                    </td>
-                    <td className="col-half">
-                      <div className="deadline-cell">
-                        <select
-                          className="kind-select"
-                          value={r.kind}
-                          onChange={(e) => update(i, "kind", e.target.value)}
-                        >
-                          <option value="delivery">DEL</option>
-                          <option value="pickup">PU</option>
-                        </select>
+                    {/* One stop = one cell: what kind, when, which facility and
+                        where. These were three columns that were always read
+                        together, and splitting them meant scrolling sideways to
+                        answer a single question. The order matches a pasted
+                        load block — date/time, facility, address — so the cell
+                        reads the way the source document does. The address is a
+                        textarea, not an input, so a two-line address stays
+                        readable instead of being clipped to one line. */}
+                    <td className="col-stop">
+                      <div className="stop-cell">
+                        <div className="stop-when">
+                          <select
+                            className="kind-select"
+                            value={r.kind}
+                            onChange={(e) => update(i, "kind", e.target.value)}
+                          >
+                            <option value="delivery">DEL</option>
+                            <option value="pickup">PU</option>
+                          </select>
+                          <input
+                            className="small"
+                            type="datetime-local"
+                            value={r.appt_at}
+                            onChange={(e) => update(i, "appt_at", e.target.value)}
+                          />
+                          {zone ? (
+                            <span className="tz-tag" title={zoneHint}>
+                              {zone}
+                            </span>
+                          ) : null}
+                        </div>
                         <input
-                          className="small"
-                          type="datetime-local"
-                          value={r.appt_at}
-                          onChange={(e) => update(i, "appt_at", e.target.value)}
+                          className="facility-input"
+                          placeholder="Facility name (from paste)"
+                          value={r.name}
+                          onChange={(e) => update(i, "name", e.target.value)}
                         />
-                        {zone ? (
-                          <span className="tz-tag" title={zoneHint}>
-                            {zone}
-                          </span>
-                        ) : null}
+                        <textarea
+                          className="dest-input"
+                          rows={2}
+                          placeholder="Paste the whole load block here"
+                          value={r.destination}
+                          // The address wraps visually; it must not contain
+                          // literal newlines. An <input> stripped them for
+                          // free, a <textarea> does not — and a newline inside
+                          // the string reaches the geocoder verbatim.
+                          onChange={(e) =>
+                            update(i, "destination", e.target.value.replace(/\s*\n\s*/g, " "))
+                          }
+                          // Enter would insert a newline that the handler above
+                          // then strips, which looks like the key doing nothing.
+                          // Blocking it is the honest version of the same result.
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.preventDefault();
+                          }}
+                          onPaste={(e) => handleDestPaste(i, e)}
+                        />
                       </div>
                     </td>
                     <td className="col-half">
@@ -783,7 +825,7 @@ export default function Page() {
                   no more rows coming and an ellipsis would be a lie. */}
               {rows.length < maxRows ? (
                 <tr className="more-row">
-                  <td colSpan={15} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                  <td colSpan={13} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
                     <span className="more-dots">…</span>
                     <span className="more-text">
                       {maxRows - rows.length} more row
@@ -793,7 +835,7 @@ export default function Page() {
                 </tr>
               ) : (
                 <tr className="more-row">
-                  <td colSpan={15}>
+                  <td colSpan={13}>
                     <span className="more-text">
                       Row limit reached — {maxRows} of {maxRows}.
                     </span>

@@ -329,6 +329,9 @@ async function checkOne(supabase, load, ctx) {
               eta_display: formatEta(etaIso, tz),
               truck_at: pos.formatted,
               miles_left: est.milesLeft,
+              // Lets the email render the appointment as a readable local time
+              // instead of the raw "2026-07-31T03:15" it is stored as.
+              timeZone: tz,
             },
           });
           out.emailed = res.sent;
@@ -572,7 +575,12 @@ async function sweepCheckins(supabase) {
     const to = recipientsFor(profile, "remind");
     if (to.length > 0) {
       try {
-        const res = await sendCheckinEmail({ to, load });
+        const res = await sendCheckinEmail({
+          to,
+          // Same reason as the late alert: without a zone the appointment
+          // prints as a raw ISO-ish string.
+          load: { ...load, timeZone: tzFromCoords(load.dest_lat, load.dest_lng) || FALLBACK_TZ },
+        });
         for (const e of res.errors) {
           emailErrors.push({ id: load.id, to: e.to, error: String(e.error).slice(0, 150) });
         }

@@ -7,8 +7,10 @@ export default function Instructions() {
     <div className="instructions">
       <p className="instructions-lead">
         Paste the whole load block into the <b>PASTE HERE 🔽</b> column — one
-        paste can fill several rows at once. Then add the truck # or Samsara Live
-        Share link and press Save. Everything after that is automatic.
+        paste can fill several rows at once, and it fills the stop type, date and
+        time, facility name and address together. Then add the truck # or Samsara
+        Live Share link and press <b>Save &amp; Check</b>. Everything after that
+        is automatic.
       </p>
 
       <div className="instructions-grid">
@@ -63,7 +65,7 @@ Lake Elmo, MN 55042`}</pre>
           mile, and stops being checked after that.
         </li>
         <li>
-          You can track up to <b>100 loads</b>. The table opens with 15 rows and
+          You can track up to <b>100 loads</b>. The table opens with 10 rows and
           adds more as you go — there are always 5 blank rows below the last one
           you filled in, so you never have to ask for another.
         </li>
