@@ -33,6 +33,20 @@ function tzAbbr(timeZone, when) {
   }
 }
 
+// A timestamp split for the two-line "Last updated" cell: "2:37 AM" over
+// "07/31". Rendered in the viewer's own timezone — unlike the appointment
+// columns, this answers "how fresh is this?", which is a question about the
+// clock on the wall in front of you, not the one at the delivery.
+function timeStamp(iso) {
+  if (!iso) return null;
+  const d = new Date(String(iso).replace(" ", "T"));
+  if (!Number.isFinite(d.getTime())) return null;
+  return {
+    time: d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+    date: d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" }),
+  };
+}
+
 function StatusBadge({ row }) {
   const map = {
     on_time: ["ontime", "On time"],
@@ -405,11 +419,12 @@ export default function Page() {
 
       <div className="card">
         <div className="toolbar">
+          {/* The running row count lived here and was noise — the table itself
+              shows how full it is, and the "…" row below it carries the limit.
+              Only the over-cap warning survives, because that one is actionable:
+              rows past the cap are silently dropped on save. */}
           <span className="status-line">
-            {loading
-              ? "Loading…"
-              : `${filled} of ${maxRows} loads used — max ${maxRows} rows`}
-            {overCap ? " — over the limit, extra rows won't save" : ""}
+            {overCap ? `Over the ${maxRows}-row limit — extra rows won't save` : ""}
           </span>
           <div className="toolbar-actions">
             <button className="btn ghost pale" onClick={() => setShowHelp((v) => !v)}>
@@ -469,6 +484,7 @@ export default function Page() {
                 <th className="col-clear" />
                 <th className="col-idx">#</th>
                 <th className="col-loc">Last location</th>
+                <th className="col-updated">Last updated</th>
                 <th className="col-miles">Miles left</th>
                 <th className="col-status">Status</th>
                 <th className="col-checkin">Check-in</th>
@@ -484,6 +500,16 @@ export default function Page() {
             <tbody>
               {rows.map((r, i) => {
                 const needsCheckin = r.checkin_state === "due" || r.checkin_state === "missed";
+                const stamp = timeStamp(r.updated_at);
+                // A check is outstanding when the worker owes this row an
+                // answer: either it has never produced one, or its scheduled
+                // time has come round and the cron hasn't swept it yet.
+                const pending =
+                  !!r.id &&
+                  !!r.source &&
+                  !!r.deadline &&
+                  (r.status === "unknown" ||
+                    (!!r.next_check_at && new Date(r.next_check_at) <= new Date()));
                 const zone = tzAbbr(r.dest_tz, r.appt_at || r.deadline);
                 const zoneHint = zone
                   ? `Times are local to the delivery (${r.dest_tz}), not your own clock.`
@@ -506,6 +532,21 @@ export default function Page() {
                     <td className="col-idx">{i + 1}</td>
                     <td className="col-loc">
                       <span className="muted">{r.last_place || "—"}</span>
+                    </td>
+                    <td className="col-updated">
+                      {pending ? (
+                        <span className="checking-cell" title="Checking location and ETA…">
+                          <span className="spinner tiny" />
+                          <span className="checking-word">checking</span>
+                        </span>
+                      ) : stamp ? (
+                        <span title={`Last checked ${new Date(r.updated_at).toLocaleString()}`}>
+                          <span className="stamp-time">{stamp.time}</span>
+                          <span className="stamp-date">{stamp.date}</span>
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </td>
                     <td className="col-miles">
                       {typeof r.miles_left === "number" ? (
@@ -649,7 +690,7 @@ export default function Page() {
                   no more rows coming and an ellipsis would be a lie. */}
               {rows.length < maxRows ? (
                 <tr className="more-row">
-                  <td colSpan={13} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                  <td colSpan={14} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
                     <span className="more-dots">…</span>
                     <span className="more-text">
                       {maxRows - rows.length} more row
@@ -659,7 +700,7 @@ export default function Page() {
                 </tr>
               ) : (
                 <tr className="more-row">
-                  <td colSpan={13}>
+                  <td colSpan={14}>
                     <span className="more-text">
                       Row limit reached — {maxRows} of {maxRows}.
                     </span>

@@ -6,6 +6,7 @@ import {
   tzFromCoords,
   localToIso,
   formatEta,
+  findStopNear,
 } from "../../../lib/samsara";
 import { fetchShareLocation } from "../../../lib/samsaraShare";
 import { geocode, estimateEta, haversineMiles, ARRIVAL_MILES } from "../../../lib/maps";
@@ -21,6 +22,37 @@ export const maxDuration = 60;
 const FALLBACK_TZ = process.env.DEFAULT_TIMEZONE || "America/Chicago";
 const CHECKIN_LEAD_MS = 5 * 60 * 1000;
 const CHECKIN_REPROMPT_MS = 15 * 60 * 1000;
+
+// ---- Arrival by dwell ----------------------------------------------------
+//
+// ARRIVAL_MILES (0.1) marks arrival outright — that close, nothing else needs
+// checking. But a tractor in a big DC yard or staged on the street can sit
+// several hundred yards from the geocoded pin and never get that close, so a
+// second rule catches those: within ARRIVAL_NEAR_MILES *and* stationary for
+// ARRIVAL_DWELL_MIN.
+//
+// The dwell requirement is what makes the wider radius safe. Half a mile alone
+// would fire on a truck driving past on the road outside; half a mile plus
+// fifteen minutes of not moving is a truck that has stopped there on purpose.
+// A red light or a fuel stop does not last fifteen minutes.
+const ARRIVAL_NEAR_MILES = Number(process.env.ARRIVAL_NEAR_MILES || 0.5);
+const ARRIVAL_DWELL_MS = Number(process.env.ARRIVAL_DWELL_MIN || 15) * 60 * 1000;
+// GPS jitter keeps a parked truck reading a fraction of a mph rather than zero.
+const STOPPED_MPH = Number(process.env.STOPPED_MPH || 2);
+
+// ---- Runaway guard -------------------------------------------------------
+//
+// Slack goes negative the moment a load is late, which puts it in the 5-minute
+// critical tier — 288 checks a day, forever, for a row nobody will ever close.
+// Seven abandoned rows would eat the entire ORS free quota. So tracking stops
+// once a load is this far past its alert deadline without arriving. The row
+// stays visible and says why; it simply stops costing anything.
+const TRACK_MAX_PAST_DEADLINE_MS =
+  Number(process.env.TRACK_MAX_HOURS_PAST_DEADLINE || 48) * 60 * 60 * 1000;
+
+// History backfill: at most one call per row per hour, looking back 12 hours.
+const HISTORY_MIN_GAP_MS = Number(process.env.HISTORY_MIN_GAP_MIN || 60) * 60 * 1000;
+const HISTORY_LOOKBACK_MS = Number(process.env.HISTORY_LOOKBACK_HOURS || 12) * 60 * 60 * 1000;
 
 // GET /api/check?key=CHECK_SECRET
 //
@@ -71,7 +103,7 @@ export async function GET(req) {
 // Per-user setup: their Samsara token, and one GPS fetch shared by all of
 // their truck# rows rather than one call per row.
 async function userContext(supabase, userId, loads) {
-  const ctx = { gpsByName: null, gpsError: null, profile: null };
+  const ctx = { gpsByName: null, gpsError: null, profile: null, tokens: [] };
   const { data: profile } = await supabase
     .from("profiles")
     .select(
@@ -87,6 +119,9 @@ async function userContext(supabase, userId, loads) {
 
   const userToken = decryptSecret(profile?.samsara_token_enc);
   const extra = userToken ? [userToken] : [];
+  // Kept so the history backfill can reach the same account without decrypting
+  // the token a second time per row.
+  ctx.tokens = extra;
   if (!hasSamsaraToken(extra)) {
     ctx.gpsError = "No Samsara API token on this account — add one in Settings, or use a Live Share link.";
     return ctx;
@@ -119,7 +154,39 @@ async function checkOne(supabase, load, ctx) {
     );
     const tz = tzFromCoords(dest.lat, dest.lng) || FALLBACK_TZ;
 
-    if (pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_MILES) {
+    // Track how long the truck has been sitting still near this stop. Any
+    // movement, or leaving the radius, resets the clock — so `stopped_since`
+    // can only ever describe an unbroken dwell at this destination.
+    const nearby =
+      pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_NEAR_MILES;
+    const stationary = nearby && typeof pos.speed === "number" && pos.speed <= STOPPED_MPH;
+    const stoppedSince = stationary ? load.stopped_since || new Date().toISOString() : null;
+    const dwelledMs = stoppedSince ? Date.now() - new Date(stoppedSince).getTime() : 0;
+
+    // A destination that resolved to a road or a town is not a place — every
+    // distance measured from it is meaningless, so arrival must not be inferred
+    // from one. This is the "15100 Thornton Rd" case: the pin landed on the
+    // midpoint of a 3.8-mile road, and a truck 296 FEET from the real gas
+    // station read as 2.8 miles out. Marking that "arrived" (or not) on
+    // distance is guesswork, and it now moves money. The row says so instead,
+    // and check-in remains the way to close it.
+    const destTrusted = (dest.precision || "point") === "point";
+
+    const arrivedClose =
+      destTrusted && pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_MILES;
+    // Speed is only present for truck#/Samsara-API rows. Live Share rows have
+    // no speed, so they keep the distance-only rule rather than never arriving.
+    const arrivedDwell = destTrusted && stationary && dwelledMs >= ARRIVAL_DWELL_MS;
+
+    // Live checks are samples, so a short stop can fall between two of them.
+    // When the appointment has passed and the row still isn't closed, replay
+    // the truck's breadcrumbs once and ask whether it was ever parked there.
+    let backfill = null;
+    if (!arrivedClose && !arrivedDwell && destTrusted) {
+      backfill = await historyBackfill(load, dest, ctx);
+    }
+
+    if (arrivedClose || arrivedDwell || backfill) {
       // Arrival is completion, and completion is when the row is billed. This
       // is the only place an ordinary delivery gets charged; a load that never
       // reaches its destination is never charged at all.
@@ -141,9 +208,24 @@ async function checkOne(supabase, load, ctx) {
         charged,
         patch: {
           status: "arrived",
-          status_note: null,
-          arrived_at: load.arrived_at || new Date().toISOString(),
-          miles_left: 0,
+          // Say which rule fired: "arrived" a quarter-mile from the pin looks
+          // like a bug unless the row explains that the truck has been parked
+          // there for twenty minutes.
+          status_note: arrivedClose
+            ? null
+            : backfill
+            ? `Confirmed from Samsara history — parked ${backfill.miles.toFixed(
+                2
+              )} mi from the address for ${Math.round(backfill.minutes)} min.`
+            : `Parked ${straightMiles.toFixed(2)} mi from the address for ${Math.round(
+                dwelledMs / 60000
+              )} min.`,
+          // Backdate to when the truck actually got there, not when we noticed.
+          arrived_at:
+            load.arrived_at || backfill?.arrivedAt || new Date().toISOString(),
+          history_checked_at: backfill ? new Date().toISOString() : load.history_checked_at,
+          stopped_since: stoppedSince,
+          miles_left: arrivedClose ? 0 : backfill ? backfill.miles : straightMiles,
           // Arrived rows stop costing anything unless a check-in is still pending.
           next_check_at: load.checkin_enabled && load.checkin_state !== "checked_in"
             ? load.next_check_at
@@ -165,6 +247,39 @@ async function checkOne(supabase, load, ctx) {
     const late = slack != null && slack < -graceMs();
     const status = slack == null ? "unknown" : late ? "late" : "on_time";
 
+    // ---- 4b. runaway guard ----
+    // A row this far past its deadline without arriving is not going to resolve
+    // on its own, and left alone it would be re-checked every five minutes
+    // indefinitely. Stop scheduling it. The alert has already been sent, the row
+    // stays on screen with an explanation, and check-in still closes it.
+    const pastDeadlineMs = deadlineIso ? Date.now() - new Date(deadlineIso).getTime() : 0;
+    const abandoned = pastDeadlineMs > TRACK_MAX_PAST_DEADLINE_MS;
+    if (abandoned) {
+      return await finish(supabase, load, {
+        ...out,
+        status,
+        eta: formatEta(etaIso, tz),
+        patch: {
+          status,
+          status_note:
+            `Stopped tracking — over ${Math.round(
+              TRACK_MAX_PAST_DEADLINE_MS / 3600000
+            )}h past the alert time with no arrival. Clear the row, or tick check-in to close it.`,
+          eta_iso: etaIso,
+          eta_display: formatEta(etaIso, tz),
+          eta_provider: est.provider,
+          miles_left: est.milesLeft,
+          dest_lat: dest.lat,
+          dest_lng: dest.lng,
+          dest_precision: dest.precision || "point",
+          dest_span_miles: dest.spanMiles ?? null,
+          stopped_since: stoppedSince,
+          next_check_at: null,
+        },
+        pos,
+      });
+    }
+
     // ---- 5. nothing is billed here ----
     // A row in transit has not delivered its answer yet. Billing moved to
     // completion (arrival, or check-in) so an abandoned load costs nothing, and
@@ -179,7 +294,16 @@ async function checkOne(supabase, load, ctx) {
     // silent alert failures are worse than no tracking at all, because the user
     // believes they are covered.
     let alerted = load.alerted;
-    let alertNote = null;
+    // A vague destination is the single most misleading state this app can be
+    // in — miles and ETA still render, they are just measured from the wrong
+    // place — so it gets said plainly on the row rather than buried.
+    let alertNote = destTrusted
+      ? null
+      : dest.precision === "street"
+      ? `Approximate destination — matched the street${
+          dest.spanMiles ? ` (${dest.spanMiles.toFixed(1)} mi long)` : ""
+        }, not the address. Miles and ETA may be off; arrival won't auto-detect. Add a business name or check the address.`
+      : "Approximate destination — matched only the city/area. Miles and ETA may be off; arrival won't auto-detect.";
     // alert_enabled is the row's own opt-out; older rows predate the column and
     // read as undefined, which must count as enabled rather than silently off.
     const alertOn = load.alert_enabled !== false;
@@ -233,6 +357,10 @@ async function checkOne(supabase, load, ctx) {
         miles_left: est.milesLeft,
         dest_lat: dest.lat,
         dest_lng: dest.lng,
+        dest_precision: dest.precision || "point",
+        dest_span_miles: dest.spanMiles ?? null,
+        // Carried on every check so the dwell clock survives to the next one.
+        stopped_since: stoppedSince,
         checkin_due_at: checkinDueAt(load, tz),
         next_check_at: nextCheckAt({ slackMs: slack }),
       },
@@ -256,6 +384,8 @@ async function resolvePosition(load, ctx) {
       source: "samsara_api",
       precision: "exact",
       tier: null,
+      // Drives the dwell-based arrival rule. Only truck#/API rows have it.
+      speed: gps.speed,
     };
   }
 
@@ -279,12 +409,24 @@ async function resolvePosition(load, ctx) {
 // then whatever the share link itself carries.
 async function resolveDestination(supabase, load, pos) {
   if (load.dest_lat != null && load.dest_lng != null) {
-    return { lat: load.dest_lat, lng: load.dest_lng };
+    return {
+      lat: load.dest_lat,
+      lng: load.dest_lng,
+      precision: load.dest_precision || "point",
+      spanMiles: load.dest_span_miles,
+    };
   }
   if (load.destination) {
     try {
       const hit = await geocode(load.destination);
-      if (hit) return { lat: hit.lat, lng: hit.lng };
+      if (hit) {
+        return {
+          lat: hit.lat,
+          lng: hit.lng,
+          precision: hit.precision || "point",
+          spanMiles: hit.spanMiles ?? null,
+        };
+      }
     } catch (e) {
       return { error: `Couldn't locate the destination address (${e.message})` };
     }
@@ -294,6 +436,55 @@ async function resolveDestination(supabase, load, pos) {
     return { lat: pos.share.destLat, lng: pos.share.destLng };
   }
   return { error: "Destination required — paste the delivery address" };
+}
+
+/**
+ * Ask Samsara whether this truck was parked at the destination at any point we
+ * weren't looking. Returns { arrivedAt, minutes, miles } or null.
+ *
+ * The gate is the whole design. Unlike the GPS snapshot — one call shared by
+ * every row on an account — history is ONE CALL PER VEHICLE, so running it on
+ * every check would multiply Samsara traffic by the number of tracked loads.
+ * Every condition below exists to keep it rare:
+ *
+ *   - truck# rows only          (share links have no history and no vehicle id)
+ *   - only after the appointment (before that there is nothing to have missed)
+ *   - at most once per hour/row  (history_checked_at)
+ *   - only while the row is unresolved and worth confirming
+ *
+ * In practice that is a handful of calls a day, not one per check.
+ */
+async function historyBackfill(load, dest, ctx) {
+  if (!load.truck_number || load.arrived_at) return null;
+
+  const gps = ctx.gpsByName?.get(normalizeTruck(load.truck_number));
+  if (!gps?.id) return null;
+
+  // Nothing can have been missed until the appointment has come round.
+  const tz = tzFromCoords(dest.lat, dest.lng) || FALLBACK_TZ;
+  const apptIso = localToIso(load.appt_at || load.deadline, tz);
+  if (!apptIso || Date.now() < new Date(apptIso).getTime()) return null;
+
+  // Rate-limit per row.
+  const last = load.history_checked_at ? new Date(load.history_checked_at).getTime() : 0;
+  if (Date.now() - last < HISTORY_MIN_GAP_MS) return null;
+
+  // Look back far enough to cover the gap since the last check, but not so far
+  // that an earlier visit to the same yard could be mistaken for this trip.
+  const since = Date.now() - HISTORY_LOOKBACK_MS;
+
+  try {
+    return await findStopNear(gps.id, dest, {
+      sinceMs: since,
+      nearMiles: ARRIVAL_NEAR_MILES,
+      dwellMinutes: ARRIVAL_DWELL_MS / 60000,
+      extraTokens: ctx.tokens || [],
+    });
+  } catch {
+    // Never let a history lookup fail the check — it is an enhancement, not a
+    // dependency. The row keeps its live-sampled result.
+    return null;
+  }
 }
 
 function checkinDueAt(load, tz) {

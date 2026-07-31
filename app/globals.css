@@ -301,7 +301,19 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .link-btn:hover { opacity: 1; }
 
 .col-loc { width: 160px; font-size: 13px; }
-.col-miles { width: 62px; font-size: 13px; text-align: right; }
+/* Halved from 62px. The values are at most three digits, so the old width was
+   mostly padding — and the table is already wider than the viewport. */
+.col-miles { width: 31px; font-size: 13px; text-align: right; }
+
+/* Two stacked lines — "2:37 AM" over "07/31" — so freshness costs one narrow
+   column rather than a wide single-line timestamp. */
+.col-updated { width: 62px; font-size: 12px; text-align: center; }
+.stamp-time { display: block; font-weight: 600; color: var(--ink, #111); white-space: nowrap; }
+.stamp-date { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+.checking-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; }
+.checking-word { font-size: 10px; color: var(--muted); letter-spacing: 0.03em; }
+.spinner.tiny { width: 12px; height: 12px; border-width: 2px; margin: 0; }
 .muted { color: var(--muted); }
 
 .badge.arrived { color: #0b6bcb; background: #e6f0fb; }
