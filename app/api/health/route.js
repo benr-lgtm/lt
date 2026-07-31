@@ -13,8 +13,21 @@ export async function GET() {
     NEXT_PUBLIC_SUPABASE_URL: set("NEXT_PUBLIC_SUPABASE_URL"),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: set("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
     SUPABASE_SERVICE_ROLE_KEY: set("SUPABASE_SERVICE_ROLE_KEY"),
-    ORS_API_KEY: set("ORS_API_KEY"),
+    // MAPBOX_TOKEN is now the primary router, not a final-approach extra, so a
+    // missing one degrades every ETA to the ORS fallback rather than a few.
     MAPBOX_TOKEN: set("MAPBOX_TOKEN"),
+    ORS_API_KEY: set("ORS_API_KEY"),
+    // Reported but not required: the last-resort geocoder, only reached when
+    // both Nominatim and ORS fail on an address. Its absence was previously
+    // invisible here, which made "why did this address never resolve?"
+    // needlessly hard to answer.
+    GOOGLE_MAPS_KEY: {
+      set: !!process.env.GOOGLE_MAPS_KEY,
+      required: false,
+      note: process.env.GOOGLE_MAPS_KEY
+        ? null
+        : "Not set — messy addresses that Nominatim and ORS both miss will fail to geocode.",
+    },
     RESEND_API_KEY: set("RESEND_API_KEY"),
     RESEND_FROM: {
       set: !!process.env.RESEND_FROM,
@@ -30,8 +43,11 @@ export async function GET() {
     NEXT_PUBLIC_APP_URL: set("NEXT_PUBLIC_APP_URL"),
   };
 
+  // `required: false` entries are reported for visibility but must not fail the
+  // health check — otherwise an optional fallback being absent would light up
+  // the same alarm as a missing database key.
   const missing = Object.entries(env)
-    .filter(([, v]) => !v.set)
+    .filter(([, v]) => !v.set && v.required !== false)
     .map(([k]) => k);
 
   let db = { ok: false, error: null, due: null };

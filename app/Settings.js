@@ -184,8 +184,10 @@ export default function Settings({ profile, onClose, onSaved }) {
           others&rsquo; email.
         </p>
 
+        <h3 className="section-head">User info</h3>
+
         <label className="auth-label" htmlFor="fn">
-          Name <span className="opt">optional</span>
+          Your name <span className="opt">(optional)</span>
         </label>
         <input
           id="fn"
@@ -196,7 +198,7 @@ export default function Settings({ profile, onClose, onSaved }) {
         />
 
         <label className="auth-label" htmlFor="ph">
-          Phone <span className="opt">optional</span>
+          Phone <span className="opt">(optional)</span>
         </label>
         {/* autoComplete="tel" rather than "off": Chrome ignores "off" on contact
             fields and was filling this with the account email. Naming the field

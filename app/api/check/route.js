@@ -120,9 +120,25 @@ async function checkOne(supabase, load, ctx) {
     const tz = tzFromCoords(dest.lat, dest.lng) || FALLBACK_TZ;
 
     if (pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_MILES) {
+      // Arrival is completion, and completion is when the row is billed. This
+      // is the only place an ordinary delivery gets charged; a load that never
+      // reaches its destination is never charged at all.
+      //
+      // Wrapped because a billing failure must not take the arrival down with
+      // it: the surrounding catch would mark this row "Couldn't track", turning
+      // a successfully delivered load into a visible tracking failure over a
+      // ledger write. charged_at stays null so it can be collected later.
+      let charged = false;
+      try {
+        const charge = await chargeForRow(supabase, load);
+        charged = charge.charged;
+      } catch (e) {
+        out.chargeError = String(e.message).slice(0, 150);
+      }
       return await finish(supabase, load, {
         ...out,
         status: "arrived",
+        charged,
         patch: {
           status: "arrived",
           status_note: null,
@@ -149,23 +165,12 @@ async function checkOne(supabase, load, ctx) {
     const late = slack != null && slack < -graceMs();
     const status = slack == null ? "unknown" : late ? "late" : "on_time";
 
-    // ---- 5. bill once, only now that we have a real result ----
-    let charge = null;
-    if (!load.charged_at) {
-      charge = await chargeForRow(supabase, load);
-      if (!charge.charged && charge.reason === "insufficient_balance") {
-        return await finish(supabase, load, {
-          ...out,
-          status: "unpaid",
-          patch: {
-            status: "unpaid",
-            status_note: "Balance too low — top up to resume tracking.",
-            next_check_at: null,
-          },
-          pos,
-        });
-      }
-    }
+    // ---- 5. nothing is billed here ----
+    // A row in transit has not delivered its answer yet. Billing moved to
+    // completion (arrival, or check-in) so an abandoned load costs nothing, and
+    // there is deliberately no balance gate: tracking is never withheld over
+    // money, because a load that silently stopped being watched is the single
+    // worst thing this app can do to someone.
 
     // ---- 6. alert on the flip to late, once ----
     // `alerted` is only ever set once the provider has confirmed the send, so a
@@ -218,7 +223,6 @@ async function checkOne(supabase, load, ctx) {
       ...out,
       status,
       eta: formatEta(etaIso, tz),
-      charged: charge?.charged || false,
       patch: {
         status,
         status_note: alertNote,

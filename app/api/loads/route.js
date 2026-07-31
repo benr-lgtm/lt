@@ -1,10 +1,23 @@
 import { getSessionUser, unauthorized } from "../../../lib/supabaseServer";
 import { looksLikeShareUrl } from "../../../lib/samsaraShare";
+import { tzFromCoords } from "../../../lib/samsara";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ROW_COST_CENTS = 200;
+// Deadlines are wall-clock times in the DESTINATION's timezone — a 09:00
+// appointment means 09:00 where the receiver is, not where the dispatcher is
+// sitting. That is the correct semantic, but it is invisible in the UI, so
+// someone entering times against an Eastern clock for an Amarillo delivery is
+// silently an hour out. Attaching the zone here lets the table label the field.
+//
+// tz-lookup is an offline coordinate lookup, so this costs no API quota.
+function withTz(loads) {
+  return (loads || []).map((l) => ({
+    ...l,
+    dest_tz: tzFromCoords(l.dest_lat, l.dest_lng),
+  }));
+}
 
 // GET /api/loads -> this user's rows only (RLS also enforces it server-side).
 export async function GET() {
@@ -19,7 +32,7 @@ export async function GET() {
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   return Response.json({
-    loads: data || [],
+    loads: withTz(data),
     // Return the whole profile (minus the token ciphertext) rather than a
     // hand-picked subset. The subset was a trap: Settings is populated from this
     // payload, so every field missing here rendered blank and then got SAVED
@@ -41,7 +54,6 @@ export async function PUT(req) {
     const body = await req.json();
     const rows = Array.isArray(body.rows) ? body.rows : [];
     const maxRows = profile?.max_rows ?? 30;
-    const balance = profile?.balance_cents ?? 0;
 
     const { data: existing } = await supabase.from("loads").select("*");
     const byPos = new Map((existing || []).map((r) => [r.position, r]));
@@ -93,10 +105,11 @@ export async function PUT(req) {
         prev.deadline !== deadline ||
         prev.kind !== kind;
 
+      // Trackable means "has somewhere to look and something to be late for".
+      // Note there is no affordability test any more: billing happens on
+      // completion and the balance is allowed to go negative, so money can
+      // never be the reason a load silently stops being watched.
       const trackable = !!((truck_number || samsara_url) && deadline);
-      // A row already paid for stays scheduled; a new one needs funds.
-      const paidFor = !!prev?.charged_at;
-      const affordable = paidFor || balance >= ROW_COST_CENTS;
 
       const row = {
         user_id: user.id,
@@ -121,7 +134,7 @@ export async function PUT(req) {
       // partial key set on one row silently wipes columns on the others.
       if (changed) {
         Object.assign(row, {
-          status: trackable ? (affordable ? "unknown" : "unpaid") : "unknown",
+          status: "unknown",
           status_note: null,
           alerted: false,
           eta_iso: null,
@@ -140,7 +153,7 @@ export async function PUT(req) {
           checkin_prompted_at: null,
           // Due immediately so a freshly saved row gets its first check on the
           // next cron tick rather than waiting out a tier interval.
-          next_check_at: trackable && affordable ? new Date().toISOString() : null,
+          next_check_at: trackable ? new Date().toISOString() : null,
           charged_at: prev?.charged_at ?? null,
           cycle: prev?.cycle ?? 0,
           dest_lat: prev && prev.destination === destination ? prev.dest_lat ?? null : null,
@@ -200,7 +213,7 @@ export async function PUT(req) {
       .eq("id", user.id)
       .maybeSingle();
 
-    return Response.json({ loads: data || [], profile: publicProfile(fresh) });
+    return Response.json({ loads: withTz(data), profile: publicProfile(fresh) });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }

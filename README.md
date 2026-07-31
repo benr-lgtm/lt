@@ -78,18 +78,18 @@ free. *(Prefer Google? Set `MAPS_PROVIDER=google` and `GOOGLE_MAPS_KEY`. Note
 Google bills per request after its free credit.)*
 
 ### 4. Resend (email)
-1. Sign up at [resend.com](https://resend.com) **with the address you want alerts
-   sent to** (e.g. `dispatch@stltruckers.com`), and create an **API key** →
+1. Sign up at [resend.com](https://resend.com) and create an **API key** →
    `RESEND_API_KEY`.
-2. **No domain verification needed.** Leave `RESEND_FROM` as the shared sender
-   `STL Truckers Load Tracker <onboarding@resend.dev>`. Resend allows this sender
-   to deliver **only to your Resend signup address** — which is exactly where you
-   want alerts to go.
-3. Set `NOTIFY_EMAIL` to that same address (`dispatch@stltruckers.com`). All
-   alerts go there; there's no email box in the app.
+2. **Verify the `truckon.site` domain in Resend**, then set
+   `RESEND_FROM` to `TruckOn <alerts@truckon.site>`.
 
-> Later, if you want alerts sent to *other* addresses too, you'd verify a domain
-> in Resend and change `RESEND_FROM` to something like `alerts@stltruckers.com`.
+> Domain verification is not optional once there is more than one user. The
+> shared `onboarding@resend.dev` sender delivers **only** to the address the
+> Resend account was registered with — every other recipient silently receives
+> nothing, with no bounce and no error. `/api/health` warns if `RESEND_FROM`
+> still points at `resend.dev`.
+
+Alert recipients are configured per account in **Settings**, not by an env var.
 
 ### 5. Deploy to Vercel
 1. Push this folder to a GitHub repo.
@@ -101,17 +101,16 @@ Google bills per request after its free credit.)*
    |---|---|
    | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
    | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
-   | `SAMSARA_API_TOKEN` | Samsara API token (first account) |
+   | `SAMSARA_API_TOKEN` | optional — instance-owner fallback; users add their own in Settings |
    | `SAMSARA_API_TOKENS` | optional — other accounts' tokens, comma-separated |
-   | `MAPS_PROVIDER` | `mapbox` |
-   | `MAPBOX_TOKEN` | Mapbox public token |
-   | `GEOCODE_PROVIDER` | optional — `google` for more forgiving address lookups |
-   | `GOOGLE_MAPS_KEY` | optional — enables Google geocode (and auto-fallback) |
+   | `ORS_API_KEY` | OpenRouteService key — supplies the truck-legal route |
+   | `MAPBOX_TOKEN` | Mapbox public token — supplies the speed along it |
+   | `GOOGLE_MAPS_KEY` | optional — last-resort geocoder for messy addresses |
    | `RESEND_API_KEY` | Resend API key |
-   | `RESEND_FROM` | `STL Truckers Load Tracker <onboarding@resend.dev>` |
-   | `NOTIFY_EMAIL` | `dispatch@stltruckers.com` (your Resend signup address) |
-   | `CHECK_SECRET` | any long random string |
-   | `CHECK_BATCH_LINKS` | `2` (Live Share loads refreshed per check) |
+   | `RESEND_FROM` | `TruckOn <alerts@truckon.site>` (verified domain) |
+   | `ENCRYPTION_KEY` | 64 hex chars — encrypts per-user Samsara tokens |
+   | `CHECK_SECRET` | any long random string; the cron must send `?key=` this |
+   | `ADMIN_PASSWORD` / `ADMIN_SECRET` | guard the hidden `/admin` panel |
    | `LATE_GRACE_MIN` | `0` |
 
 4. **Deploy.** You'll get a URL like `https://load-tracker-xxx.vercel.app`.

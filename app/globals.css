@@ -238,6 +238,21 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .col-half input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 12px; padding: 7px 6px; }
 .col-half .kind-select { width: 52px; font-size: 12px; padding: 7px 4px; }
 .deadline-cell input[type="datetime-local"] { flex: 1; min-width: 0; }
+/* Destination timezone beside the date fields. Deadlines are wall-clock times
+   at the RECEIVER, so without this a dispatcher reading their own clock can be
+   a whole timezone out and never know it. */
+.tz-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: var(--chip, #f2f4f7);
+  border-radius: 4px;
+  padding: 2px 4px;
+  cursor: help;
+  white-space: nowrap;
+}
 .alert-cell { display: flex; gap: 4px; align-items: center; }
 .alert-cell input { flex: 1; min-width: 0; }
 .link-btn {
@@ -390,8 +405,67 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 
 /* ---------- header extras ---------- */
 .header-right { display: flex; align-items: center; gap: 12px; }
-.balance { font-size: 18px; font-weight: 700; padding: 6px 12px; border-radius: 999px; background: var(--green-bg); color: var(--green); }
-.balance.low { background: var(--red-bg); color: var(--red); }
+/* ---------- balance chip + ledger panel ---------- */
+.balance-wrap { position: relative; }
+.balance-btn {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 18px; font-weight: 700; padding: 6px 12px; border-radius: 999px;
+  background: var(--green-bg); color: var(--green);
+  border: 1px solid transparent; cursor: pointer; font-family: inherit;
+}
+.balance-btn:hover { border-color: currentColor; }
+.balance-btn.low { background: #fff5e6; color: #b4690e; }
+.balance-btn.negative { background: var(--red-bg); color: var(--red); }
+.balance-caret { font-size: 9px; opacity: 0.7; }
+
+/* Anchored to the chip and right-aligned so it can never run off the viewport
+   edge on a narrow window, which a left-aligned dropdown here would. */
+.balance-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+  width: 380px; max-width: calc(100vw - 32px);
+  max-height: 70vh; overflow-y: auto;
+  background: #fff; border: 1px solid var(--line-strong); border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(16, 24, 40, 0.18);
+  padding: 16px 18px 14px; text-align: left;
+}
+.balance-panel-head { display: flex; justify-content: space-between; align-items: flex-start; }
+.balance-big { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.balance-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.balance-close {
+  background: none; border: 0; font-size: 22px; line-height: 1;
+  color: var(--muted); cursor: pointer; padding: 0 2px;
+}
+.balance-note {
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+  margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.balance-note.topup { margin-bottom: 0; }
+.balance-section {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--muted); margin: 16px 0 6px;
+}
+.balance-empty { font-size: 13px; color: var(--muted); margin: 6px 0; }
+.balance-empty.err { color: var(--red); }
+
+.balance-months { width: 100%; border-collapse: collapse; font-size: 13px; }
+.balance-months td { padding: 5px 0; border-bottom: 1px solid var(--line); }
+.balance-months td.muted { color: var(--muted); font-size: 12px; text-align: center; }
+
+.ledger { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.ledger li {
+  display: grid; grid-template-columns: 62px 1fr auto;
+  gap: 10px; align-items: baseline;
+  padding: 7px 0; border-bottom: 1px solid var(--line);
+}
+/* Tabular figures so the +/- column reads as a column, not ragged text. */
+.ledger .amt, .balance-months .amt {
+  font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.amt.in { color: var(--green); }
+.amt.out { color: var(--red); }
+.balance-months .amt { text-align: right; }
+.ledger-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-when { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 /* ---------- admin ---------- */
 .section-title { font-size: 15px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--line); }
@@ -441,6 +515,19 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .req { color: var(--red); }
 .opt { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11px; }
 .field-hint { font-size: 12px; color: var(--muted); margin: -8px 0 14px; line-height: 1.45; }
+/* Section divider inside the Settings dialog. The generous top margin is the
+   point: it separates the recipient list above from the personal details below,
+   which previously ran together as one undifferentiated column of inputs. */
+.section-head {
+  margin: 30px 0 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line, #e4e7ec);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
 .check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 6px; cursor: pointer; }
 .check-row input { width: 15px; height: 15px; }
 .sub { font-size: 11px; color: var(--muted); }

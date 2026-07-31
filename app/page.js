@@ -5,82 +5,31 @@ import { parseLoads } from "../lib/parseLoads";
 import { getBrowserSupabase } from "../lib/supabaseBrowser";
 import Instructions from "./Instructions";
 import Settings from "./Settings";
+import Balance from "./Balance";
+import {
+  MIN_ROWS,
+  blankRow,
+  rowEmpty,
+  withSpare,
+  mergeRows,
+  applyServerFields,
+} from "../lib/rows";
 
-const MIN_ROWS = 15;
-const SPARE_ROWS = 5;
-
-function blankRow(position) {
-  return {
-    id: null,
-    position,
-    name: "",
-    source: "",
-    kind: "delivery",
-    appt_at: "",
-    deadline: "",
-    alert_unlinked: false,
-    destination: "",
-    notes: "",
-    alert_enabled: true,
-    checkin_enabled: false,
-    checkin_state: null,
-    status: "unknown",
-    eta_display: "",
-    last_place: "",
-    miles_left: null,
-    position_precision: null,
-    truck_at: "",
-    status_note: "",
-  };
-}
-
-const isLink = (s) => /^https?:\/\//i.test(String(s || "").trim());
-const rowEmpty = (r) =>
-  !r.name && !r.source && !r.destination && !r.deadline && !r.appt_at && !r.notes;
-
-function withSpare(list) {
-  let lastFilled = -1;
-  list.forEach((r, i) => {
-    if (!rowEmpty(r)) lastFilled = i;
-  });
-  const size = Math.max(MIN_ROWS, lastFilled + 1 + SPARE_ROWS);
-  const next = [];
-  for (let i = 0; i < size; i++) next.push(list[i] ? { ...list[i], position: i } : blankRow(i));
-  return next;
-}
-
-function mergeRows(loads) {
-  const byPos = new Map((loads || []).map((l) => [l.position, l]));
-  const maxPos = Math.max(-1, ...(loads || []).map((l) => l.position));
-  const base = Array.from({ length: Math.max(MIN_ROWS, maxPos + 1) }, (_, i) => {
-    const l = byPos.get(i);
-    if (!l) return blankRow(i);
-    return {
-      id: l.id,
-      position: i,
-      name: l.name || "",
-      source: l.samsara_url || l.truck_number || "",
-      kind: l.kind || "delivery",
-      appt_at: l.appt_at || l.deadline || "",
-      deadline: l.deadline || "",
-      alert_unlinked: !!l.alert_unlinked,
-      destination: l.destination || "",
-      notes: l.notes || "",
-      // Rows saved before this column existed come back undefined; treat that as
-      // alerting so nobody's existing loads go quiet after the upgrade.
-      alert_enabled: l.alert_enabled !== false,
-      checkin_enabled: !!l.checkin_enabled,
-      checkin_state: l.checkin_state || null,
-      status: l.status || "unknown",
-      eta_display: l.eta_display || "",
-      last_place: l.last_place || "",
-      miles_left: l.miles_left,
-      position_precision: l.position_precision || null,
-      truck_at: l.truck_at || "",
-      status_note: l.status_note || "",
-    };
-  });
-  return withSpare(base);
+// "America/Chicago" -> "CDT". Null until the destination has been geocoded,
+// since the zone is derived from its coordinates.
+function tzAbbr(timeZone, when) {
+  if (!timeZone) return null;
+  try {
+    const at = when ? new Date(when.replace(" ", "T")) : new Date();
+    const d = Number.isFinite(at.getTime()) ? at : new Date();
+    return (
+      new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "short" })
+        .formatToParts(d)
+        .find((p) => p.type === "timeZoneName")?.value || null
+    );
+  } catch {
+    return null;
+  }
 }
 
 function StatusBadge({ row }) {
@@ -152,25 +101,35 @@ export default function Page() {
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
-  async function refresh() {
+  // `full` rebuilds the table from the server (initial load, and after a save,
+  // where the server's copy IS the truth). The polling path never does this —
+  // see applyServerFields.
+  async function refresh({ full = false } = {}) {
     const r = await fetch("/api/loads").then((x) => x.json());
-    if (r.loads) setRows(mergeRows(r.loads));
+    if (r.loads) {
+      setRows((prev) => (full ? mergeRows(r.loads) : applyServerFields(prev, r.loads)));
+    }
     if (r.profile) setProfile(r.profile);
     if (r.error) setMessage("Couldn't load data: " + r.error);
   }
 
-  // A row that has everything it needs but no result yet is still being worked
-  // on by the background checker. Deriving this from the data (rather than a
-  // manual flag) means the banner clears itself the moment a result lands.
+  // A row that has been SAVED and has everything it needs but no result yet is
+  // still being worked on by the background checker.
+  //
+  // The `r.id` test is essential: without it a row became "checking" the moment
+  // the truck # and date were typed, which showed the working spinner before
+  // anything had been submitted and put the whole table on a 12-second poll
+  // while the user was still typing into it. Nothing contacts a provider until
+  // Save & Check writes the row and the worker picks it up.
   const checking = useMemo(
-    () => rows.some((r) => r.source && r.deadline && r.status === "unknown"),
+    () => rows.some((r) => r.id && r.source && r.deadline && r.status === "unknown"),
     [rows]
   );
 
   useEffect(() => {
     (async () => {
       try {
-        await refresh();
+        await refresh({ full: true });
       } finally {
         setLoading(false);
       }
@@ -188,6 +147,39 @@ export default function Page() {
   const filled = useMemo(() => rows.filter((r) => !rowEmpty(r)).length, [rows]);
   const maxRows = profile?.max_rows ?? 30;
   const overCap = filled > maxRows;
+
+  // ---- Save & Check throttle -------------------------------------------
+  //
+  // Every saved row is queued for an immediate check, so repeated saves are
+  // what turn one table into dozens of provider calls. The button locks for
+  // COOLDOWN_MIN_MS and then stays locked until the first results land.
+  //
+  // COOLDOWN_MAX_MS is the release valve: `checking` clears when the worker
+  // writes a result, but if the cron is wedged it would never clear, and a
+  // permanently dead button is a worse failure than an extra API call. After
+  // three minutes the user gets control back regardless.
+  const COOLDOWN_MIN_MS = 30000;
+  const COOLDOWN_MAX_MS = 180000;
+  const [lockedAt, setLockedAt] = useState(0);
+  const [tick, setTick] = useState(0);
+
+  const sinceSave = lockedAt ? tick - lockedAt : Infinity;
+  const locked =
+    lockedAt > 0 &&
+    (sinceSave < COOLDOWN_MIN_MS || (checking && sinceSave < COOLDOWN_MAX_MS));
+  const cooldownLeft = locked ? Math.ceil((COOLDOWN_MIN_MS - sinceSave) / 1000) : 0;
+
+  useEffect(() => {
+    if (!lockedAt) return;
+    setTick(Date.now());
+    const t = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [lockedAt]);
+
+  useEffect(() => {
+    // Drop the timer once the lock expires so the page isn't ticking forever.
+    if (lockedAt && !locked) setLockedAt(0);
+  }, [locked, lockedAt]);
 
   function update(i, field, value) {
     setRows((prev) => {
@@ -292,9 +284,14 @@ export default function Page() {
         body: JSON.stringify({ rows: payload }),
       }).then((r) => r.json());
       if (res.error) return setMessage("Save failed: " + res.error);
+      // The PUT response IS the server's post-save truth, so a full rebuild is
+      // correct here (unlike the poll).
       if (res.loads) setRows(mergeRows(res.loads));
       if (res.profile) setProfile(res.profile);
-      setMessage("Saved. Tracking runs automatically — no need to press anything again.");
+      setLockedAt(Date.now());
+      setMessage(
+        "Saved — checking now. ETAs appear on their own; you don't need to press anything again."
+      );
       // Nudge the first refresh so a result can appear without waiting a full
       // polling interval.
       setTimeout(refresh, 4000);
@@ -320,7 +317,19 @@ export default function Page() {
   }
 
   const busy = saving || loading;
+  const saveBlocked = busy || locked;
   const lowBalance = profile && profile.balance_cents < 200;
+
+  const saveLabel = saving
+    ? "Saving…"
+    : cooldownLeft > 0
+    ? `Checking… ${cooldownLeft}s`
+    : locked
+    ? "Checking…"
+    : "Save & Check";
+  const saveTitle = locked
+    ? "Checking the rows you just saved. The button unlocks when the first ETAs come back."
+    : "Save the table and start checking ETAs";
 
   // The table is wider than the viewport and the useful columns now sit at both
   // ends, so a bottom-only scrollbar means scrolling to the bottom of a 20-row
@@ -364,11 +373,7 @@ export default function Page() {
           </p>
         </div>
         <div className="header-right">
-          {profile ? (
-            <span className={"balance" + (lowBalance ? " low" : "")}>
-              ${((profile.balance_cents || 0) / 100).toFixed(2)}
-            </span>
-          ) : null}
+          {profile ? <Balance balanceCents={profile.balance_cents || 0} /> : null}
           <button className="btn secondary" onClick={() => setShowSettings(true)}>
             Settings
           </button>
@@ -395,8 +400,8 @@ export default function Page() {
             <button className="btn secondary" onClick={clearAll} disabled={busy}>
               Clear all
             </button>
-            <button className="btn" onClick={save} disabled={busy}>
-              {saving ? "Saving…" : "Save"}
+            <button className="btn" onClick={save} disabled={saveBlocked} title={saveTitle}>
+              {saveLabel}
             </button>
           </div>
         </div>
@@ -404,20 +409,24 @@ export default function Page() {
         {showHelp ? <Instructions /> : null}
 
         {/* Checking can take a minute or two. Without a visible working state
-            users assume the save failed and hammer the button. */}
+            users assume the save failed and hammer the button. Only shown for
+            rows that have actually been saved — see `checking`. */}
         {checking ? (
           <p className="paste-result working">
             <span className="spinner" />
             Working on it — finding your trucks and calculating ETAs. This can take
-            a minute or two, and updates appear on their own. No need to press
-            anything.
+            a minute or two, and updates appear on their own. Keep filling in rows
+            if you like; nothing you type will be lost.
           </p>
         ) : null}
 
+        {/* A low balance no longer stops anything — rows keep tracking and the
+            balance is allowed to go negative — so this is a reminder, not a
+            warning, and it must not read like tracking is about to stop. */}
         {lowBalance ? (
-          <p className="paste-result err">
-            Your balance is below $2, so new rows won&rsquo;t start tracking. Ask
-            your administrator to top up.
+          <p className="paste-result">
+            Your balance is {profile.balance_cents < 0 ? "negative" : "low"}. Tracking
+            keeps running; ask your administrator to top up when convenient.
           </p>
         ) : null}
         {message && !checking ? (
@@ -457,6 +466,10 @@ export default function Page() {
             <tbody>
               {rows.map((r, i) => {
                 const needsCheckin = r.checkin_state === "due" || r.checkin_state === "missed";
+                const zone = tzAbbr(r.dest_tz, r.appt_at || r.deadline);
+                const zoneHint = zone
+                  ? `Times are local to the delivery (${r.dest_tz}), not your own clock.`
+                  : "";
                 return (
                   <tr
                     key={i}
@@ -557,6 +570,11 @@ export default function Page() {
                           value={r.appt_at}
                           onChange={(e) => update(i, "appt_at", e.target.value)}
                         />
+                        {zone ? (
+                          <span className="tz-tag" title={zoneHint}>
+                            {zone}
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td className="col-half">
@@ -567,6 +585,11 @@ export default function Page() {
                           value={r.deadline}
                           onChange={(e) => update(i, "deadline", e.target.value)}
                         />
+                        {zone ? (
+                          <span className="tz-tag" title={zoneHint}>
+                            {zone}
+                          </span>
+                        ) : null}
                         {r.alert_unlinked ? (
                           <button
                             className="link-btn"
@@ -612,15 +635,15 @@ export default function Page() {
           <button className="btn secondary" onClick={clearAll} disabled={busy}>
             Clear all
           </button>
-          <button className="btn" onClick={save} disabled={busy}>
-            {saving ? "Saving…" : "Save"}
+          <button className="btn" onClick={save} disabled={saveBlocked} title={saveTitle}>
+            {saveLabel}
           </button>
         </div>
       </div>
 
       <p className="footer">
-        Each tracked row costs $2 and is charged once, covering it from the first
-        check until the truck arrives.
+        Each tracked stop costs $2, charged once the truck arrives or the driver
+        is marked checked in. Loads that never complete are never charged.
       </p>
     </div>
   );
