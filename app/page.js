@@ -268,6 +268,10 @@ export default function Page() {
   const filled = useMemo(() => rows.filter((r) => !rowEmpty(r)).length, [rows]);
   const overCap = filled > maxRows;
 
+  // The first blank row is where the next load goes, so it gets a highlight the
+  // other blanks don't. Everything below it is just runway.
+  const firstEmpty = useMemo(() => rows.findIndex((r) => rowEmpty(r)), [rows]);
+
   // ---- Save & Check throttle -------------------------------------------
   //
   // Every saved row is queued for an immediate check, so repeated saves are
@@ -625,7 +629,11 @@ export default function Page() {
                     key={i}
                     className={
                       (r.checkin_state === "missed" ? "row-missed " : "") +
-                      (r.checkin_state === "due" ? "row-checkin " : "")
+                      (r.checkin_state === "due" ? "row-checkin " : "") +
+                      // Blank rows fade back so the loads you are actually
+                      // tracking are what the eye lands on; the first blank one
+                      // stays lit because that is where the next load goes.
+                      (rowEmpty(r) ? (i === firstEmpty ? "row-next " : "row-blank ") : "")
                     }
                   >
                     <td className="col-clear">

@@ -83,7 +83,10 @@ html, body {
 .tz-box { display: flex; flex-direction: column; gap: 6px; min-width: 130px; }
 .email-box label, .tz-box label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 
-input, select {
+/* textarea was missing from this list, which is why the paste box rendered with
+   the browser's default square, heavy-bordered look while every control beside
+   it was rounded. */
+input, select, textarea {
   font-size: 15px;
   color: var(--ink);
   background: var(--panel);
@@ -94,11 +97,11 @@ input, select {
   transition: border-color 0.15s, box-shadow 0.15s;
   font-family: inherit;
 }
-input:focus, select:focus {
+input:focus, select:focus, textarea:focus {
   border-color: var(--focus);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
-input::placeholder { color: #b6bcc7; }
+input::placeholder, textarea::placeholder { color: #b6bcc7; }
 
 .card {
   margin-top: 28px;
@@ -222,7 +225,20 @@ tbody tr:hover { background: #fcfcfd; }
   font-size: 13px;
   overflow-y: auto;
   font-family: inherit;
+  /* Rounded like its neighbours, but keeps the heavier border it had — this is
+     the field that does the most work in the table. */
+  border-radius: 8px;
+  border: 1.5px solid #c3c9d4;
 }
+.dest-input:focus { border-color: var(--focus); }
+
+/* Same weight as the paste box: truck # / share link is the other field that
+   must be filled for a row to track at all, so the two read as a pair. */
+.source-input {
+  border-width: 1.5px;
+  border-color: #c3c9d4;
+}
+.source-input:focus { border-color: var(--focus); }
 .notes-input { width: 100%; min-width: 130px; }
 input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .kind-select { width: 108px; }
@@ -371,6 +387,67 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .badge.arrived { color: #0b6bcb; background: #e6f0fb; }
 .badge.unpaid  { color: var(--amber); background: var(--amber-bg); }
 
+/* ---------- empty rows ---------- */
+/*
+ * Blank rows are runway, not content. At full contrast a screen of empty
+ * date pickers and ticked checkboxes competes with the loads actually being
+ * tracked — so they recede until they hold something.
+ *
+ * Opacity rather than per-control colours: it dims borders, text, placeholders
+ * and the native date-picker glyph in one go, and it cannot drift out of sync
+ * with the individual control styles.
+ */
+.row-blank input, .row-blank select, .row-blank textarea, .row-blank .mail-toggle,
+.row-next  input, .row-next  select, .row-next  textarea, .row-next  .mail-toggle {
+  opacity: 0.42;
+  transition: opacity 0.15s;
+}
+/* Full strength the moment the row is engaged with, so a pale row never feels
+   disabled — only quiet. */
+.row-blank:hover input, .row-blank:hover select, .row-blank:hover textarea,
+.row-blank:hover .mail-toggle,
+.row-blank input:focus, .row-blank select:focus, .row-blank textarea:focus,
+.row-next:hover input, .row-next:hover select, .row-next:hover textarea,
+.row-next:hover .mail-toggle,
+.row-next input:focus, .row-next select:focus, .row-next textarea:focus {
+  opacity: 1;
+}
+/* ...except the two fields the next row is waiting on, which stay legible even
+   while the rest of their row is muted. Without this the highlight would be
+   ringing a field the user can barely see. */
+.row-next .source-input,
+.row-next .dest-input { opacity: 1; }
+/* The dashes in the read-only columns fade too, or they read as data. */
+.row-blank .muted,
+.row-next .muted { opacity: 0.5; }
+
+/* ---------- the next row to fill ---------- */
+/*
+ * The two fields a row cannot track without: truck # / link, and the paste box.
+ * A slow breathing ring points at where to start without the shoutiness of a
+ * solid highlight — this sits under a table people stare at all day.
+ */
+.row-next .source-input,
+.row-next .dest-input {
+  border-color: #9ec5fe;
+  animation: nudge 2.4s ease-in-out infinite;
+}
+.row-next .source-input:focus,
+.row-next .dest-input:focus {
+  animation: none;
+  border-color: var(--focus);
+}
+@keyframes nudge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.28); }
+  50%      { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.10); }
+}
+/* Vestibular disorders make looping motion genuinely unpleasant, and this
+   animation is decorative — the border colour alone still marks the row. */
+@media (prefers-reduced-motion: reduce) {
+  .row-next .source-input,
+  .row-next .dest-input { animation: none; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12); }
+}
+
 /* ---------- check-in ---------- */
 .row-checkin { background: #fff8e6 !important; }
 .row-missed  { background: #fdeceb !important; box-shadow: inset 3px 0 0 var(--red); }
@@ -445,8 +522,28 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
   background: #fff; border: 1px solid var(--line); border-radius: 8px;
   padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; color: #47505f;
 }
-.instructions-notes { font-size: 12.5px; color: #47505f; margin: 12px 0 0; padding-left: 18px; }
+.instructions-notes { font-size: 12.5px; color: #47505f; margin: 8px 0 0; padding-left: 18px; }
 .instructions-notes li { margin-bottom: 5px; }
+/* Splits the notes into "what you can paste" and "what happens next" without
+   the weight of a real heading inside a help panel. */
+.instructions-note-lead {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 18px 0 0;
+}
+/* Inline format samples. Monospace so "0800" reads as a literal to type, not
+   as prose. */
+.instructions-notes code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  background: #eef0f4;
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
 
 /* ---------- auth ---------- */
 /* Column so the sign-in card and the signup call-to-action stack instead of
