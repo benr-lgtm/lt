@@ -158,7 +158,13 @@ thead th {
   white-space: nowrap;
 }
 
-tbody td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+/* Fixed row height. Without it the table reflows on every poll: the location
+   text wraps to one, two or three lines depending on the address, and the
+   check-in buttons appear and disappear — so rows visibly jump and whatever you
+   were about to click has moved. A fixed height makes vertical position stable
+   regardless of content. */
+tbody tr { height: 66px; }
+tbody td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #fcfcfd; }
 
@@ -209,24 +215,35 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .btn.secondary { color: var(--ink); background: #fff; border-color: var(--line-strong); }
 
 .col-status { width: 150px; }
+/* Three stacked lines now — "On time" / "ETA 5:06 AM CDT" / "Jul 31" — so
+   align-items moves to flex-start and the pill becomes a rounded rectangle;
+   a 999px radius around a three-line block looks like a lozenge. */
 .badge {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font-size: 13px;
   font-weight: 600;
-  padding: 6px 11px;
-  border-radius: 999px;
-  white-space: nowrap;
-  max-width: 150px;
+  padding: 7px 11px;
+  border-radius: 10px;
+  max-width: 165px;
 }
+.badge .badge-label { display: block; line-height: 1.2; }
+/* Nudged down to sit on the first line's optical centre rather than its top. */
+.badge .dot { margin-top: 5px; }
 .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
-.badge .badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.badge .badge-text { overflow: hidden; min-width: 0; }
 .badge.ontime { color: var(--green); background: var(--green-bg); }
 .badge.late   { color: var(--red);   background: var(--red-bg); }
 .badge.unknown{ color: var(--muted); background: #f0f1f4; }
 .badge.error  { color: var(--amber); background: var(--amber-bg); }
-.eta-note { display:block; font-size: 11px; color: var(--muted); font-weight: 500; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
+/* One ETA line per element, each kept to a single line so the block is always
+   exactly three rows tall and the row height stays predictable. */
+.eta-note {
+  display: block; font-size: 11px; color: var(--muted); font-weight: 500;
+  margin-top: 1px; line-height: 1.25;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .savebar {
   display: flex;
@@ -300,7 +317,12 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 }
 .link-btn:hover { opacity: 1; }
 
+/* Clamped to three lines so a long address cannot stretch the row. */
 .col-loc { width: 160px; font-size: 13px; }
+.col-loc span {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.25;
+}
 /* Halved from 62px. The values are at most three digits, so the old width was
    mostly padding — and the table is already wider than the viewport. */
 .col-miles { width: 31px; font-size: 13px; text-align: right; }
@@ -308,6 +330,7 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 /* Two stacked lines — "2:37 AM" over "07/31" — so freshness costs one narrow
    column rather than a wide single-line timestamp. */
 .col-updated { width: 62px; font-size: 12px; text-align: center; }
+.col-next { width: 66px; font-size: 12px; text-align: center; }
 .stamp-time { display: block; font-weight: 600; color: var(--ink, #111); white-space: nowrap; }
 .stamp-date { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; }
 

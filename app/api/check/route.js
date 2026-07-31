@@ -226,10 +226,19 @@ async function checkOne(supabase, load, ctx) {
           history_checked_at: backfill ? new Date().toISOString() : load.history_checked_at,
           stopped_since: stoppedSince,
           miles_left: arrivedClose ? 0 : backfill ? backfill.miles : straightMiles,
-          // Arrived rows stop costing anything unless a check-in is still pending.
-          next_check_at: load.checkin_enabled && load.checkin_state !== "checked_in"
-            ? load.next_check_at
-            : null,
+          // An arrived row is done being tracked — full stop.
+          //
+          // This previously kept `load.next_check_at` alive while a check-in was
+          // pending, which was a bug with two faces: the value retained was the
+          // one that made the row due in the FIRST place, i.e. already in the
+          // past. So the row stayed permanently due, was re-swept every two
+          // minutes forever, and the UI showed it as perpetually "checking"
+          // despite reading Arrived.
+          //
+          // Nothing was gained by it either: sweepCheckins() selects on
+          // checkin_due_at and never looks at next_check_at, so check-in
+          // prompts fire on their own schedule regardless.
+          next_check_at: null,
         },
         pos,
       });

@@ -47,6 +47,70 @@ function timeStamp(iso) {
   };
 }
 
+// Split an ETA into clock time and date, in the DESTINATION's timezone.
+// "5:06 AM CDT" over "Jul 31" — the zone stays on the time line because a bare
+// "5:06 AM" is exactly the ambiguity that makes a dispatcher second-guess.
+function etaParts(iso, timeZone) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return null;
+  const tz = timeZone || undefined;
+  try {
+    return {
+      time: new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short",
+      }).format(d),
+      date: new Intl.DateTimeFormat("en-US", {
+        timeZone: tz, month: "short", day: "numeric",
+      }).format(d),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * When this row is next due, and how often it is being checked.
+ *
+ * The cadence is not stored anywhere — the scheduler picks an interval from the
+ * row's slack (deadline minus projected ETA) and writes only the resulting
+ * timestamp. But the gap between the last check and the next one IS that
+ * interval, so it can be recovered here without shipping the tier down.
+ *
+ * That gap is the answer to "why has this row not updated recently?": a load
+ * with six hours of buffer is deliberately on a three-hour cadence, and its ETA
+ * being an hour stale is the system working, not failing.
+ */
+function nextCheckInfo(row) {
+  if (!row.next_check_at) return null;
+  const next = new Date(row.next_check_at);
+  if (!Number.isFinite(next.getTime())) return null;
+
+  const when =
+    next <= new Date()
+      ? "due now"
+      : next.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+  let every = "";
+  if (row.updated_at) {
+    const gapMin = (next - new Date(String(row.updated_at).replace(" ", "T"))) / 60000;
+    if (gapMin > 0) {
+      // Switch to hours at 60, not 90 — the 1-hour tier read as "every 60m".
+      every =
+        gapMin >= 59
+          ? `every ${Math.round(gapMin / 60)}h`
+          : `every ${Math.max(1, Math.round(gapMin))}m`;
+    }
+  }
+  return {
+    when,
+    every,
+    title:
+      `Next check ${next.toLocaleString()}` +
+      (every ? ` — ${every}, chosen from how much slack this load has.` : ""),
+  };
+}
+
 function StatusBadge({ row }) {
   const map = {
     on_time: ["ontime", "On time"],
@@ -57,18 +121,31 @@ function StatusBadge({ row }) {
     unknown: ["unknown", "—"],
   };
   const [cls, label] = map[row.status] || map.unknown;
-  const sub =
-    row.status === "error"
-      ? row.status_note
-      : row.eta_display
-      ? `ETA ${row.eta_display}`
-      : "";
+
+  // Prefer the raw instant so time and date can be split onto their own lines;
+  // fall back to the server's pre-formatted string for rows checked before
+  // eta_iso was carried to the client.
+  const parts = etaParts(row.eta_iso, row.dest_tz);
+  const isError = row.status === "error";
+
   return (
-    <span className={`badge ${cls}`} title={[sub, row.truck_at].filter(Boolean).join(" — ")}>
+    <span
+      className={`badge ${cls}`}
+      title={[row.status_note, row.truck_at].filter(Boolean).join(" — ")}
+    >
       <span className="dot" />
       <span className="badge-text">
-        {label}
-        {sub ? <span className="eta-note">{sub}</span> : null}
+        <span className="badge-label">{label}</span>
+        {isError ? (
+          row.status_note ? <span className="eta-note">{row.status_note}</span> : null
+        ) : parts ? (
+          <>
+            <span className="eta-note">ETA {parts.time}</span>
+            <span className="eta-note">{parts.date}</span>
+          </>
+        ) : row.eta_display ? (
+          <span className="eta-note">ETA {row.eta_display}</span>
+        ) : null}
       </span>
     </span>
   );
@@ -485,7 +562,12 @@ export default function Page() {
                 <th className="col-idx">#</th>
                 <th className="col-loc">Last location</th>
                 <th className="col-updated">Last updated</th>
-                <th className="col-miles">Miles left</th>
+                <th className="col-next">Next check</th>
+                <th className="col-miles">
+                  Miles
+                  <br />
+                  left
+                </th>
                 <th className="col-status">Status</th>
                 <th className="col-checkin">Check-in</th>
                 <th>Truck # or link</th>
@@ -501,6 +583,7 @@ export default function Page() {
               {rows.map((r, i) => {
                 const needsCheckin = r.checkin_state === "due" || r.checkin_state === "missed";
                 const stamp = timeStamp(r.updated_at);
+                const nextCheck = nextCheckInfo(r);
                 // A check is outstanding when the worker owes this row an
                 // answer: either it has never produced one, or its scheduled
                 // time has come round and the cron hasn't swept it yet.
@@ -543,6 +626,16 @@ export default function Page() {
                         <span title={`Last checked ${new Date(r.updated_at).toLocaleString()}`}>
                           <span className="stamp-time">{stamp.time}</span>
                           <span className="stamp-date">{stamp.date}</span>
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td className="col-next">
+                      {nextCheck ? (
+                        <span title={nextCheck.title}>
+                          <span className="stamp-time">{nextCheck.when}</span>
+                          <span className="stamp-date">{nextCheck.every}</span>
                         </span>
                       ) : (
                         <span className="muted">—</span>
@@ -690,7 +783,7 @@ export default function Page() {
                   no more rows coming and an ellipsis would be a lie. */}
               {rows.length < maxRows ? (
                 <tr className="more-row">
-                  <td colSpan={14} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                  <td colSpan={15} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
                     <span className="more-dots">…</span>
                     <span className="more-text">
                       {maxRows - rows.length} more row
@@ -700,7 +793,7 @@ export default function Page() {
                 </tr>
               ) : (
                 <tr className="more-row">
-                  <td colSpan={14}>
+                  <td colSpan={15}>
                     <span className="more-text">
                       Row limit reached — {maxRows} of {maxRows}.
                     </span>
