@@ -1,6 +1,7 @@
 import { getSessionUser, unauthorized } from "../../../lib/supabaseServer";
 import { looksLikeShareUrl } from "../../../lib/samsaraShare";
 import { tzFromCoords } from "../../../lib/samsara";
+import { MAX_ROWS } from "../../../lib/rows";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,7 +54,9 @@ export async function PUT(req) {
   try {
     const body = await req.json();
     const rows = Array.isArray(body.rows) ? body.rows : [];
-    const maxRows = profile?.max_rows ?? 30;
+    // MAX_ROWS is the default cap; profiles.max_rows lets an admin lower it.
+    // The UI enforces this too, but the UI is not a security boundary.
+    const maxRows = profile?.max_rows ?? MAX_ROWS;
 
     const { data: existing } = await supabase.from("loads").select("*");
     const byPos = new Map((existing || []).map((r) => [r.position, r]));

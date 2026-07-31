@@ -62,6 +62,11 @@ Lake Elmo, MN 55042`}</pre>
           A stop is marked <b>Arrived</b> automatically once the truck is within a
           mile, and stops being checked after that.
         </li>
+        <li>
+          You can track up to <b>100 loads</b>. The table opens with 15 rows and
+          adds more as you go — there are always 5 blank rows below the last one
+          you filled in, so you never have to ask for another.
+        </li>
       </ul>
     </div>
   );

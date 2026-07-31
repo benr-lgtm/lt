@@ -8,6 +8,7 @@ import Settings from "./Settings";
 import Balance from "./Balance";
 import {
   MIN_ROWS,
+  MAX_ROWS,
   blankRow,
   rowEmpty,
   withSpare,
@@ -101,13 +102,17 @@ export default function Page() {
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
+  // Declared before refresh() so every row-building call site can be given the
+  // account's cap. An admin can lower it per profile; MAX_ROWS is the default.
+  const maxRows = profile?.max_rows ?? MAX_ROWS;
+
   // `full` rebuilds the table from the server (initial load, and after a save,
   // where the server's copy IS the truth). The polling path never does this —
   // see applyServerFields.
   async function refresh({ full = false } = {}) {
     const r = await fetch("/api/loads").then((x) => x.json());
     if (r.loads) {
-      setRows((prev) => (full ? mergeRows(r.loads) : applyServerFields(prev, r.loads)));
+      setRows((prev) => (full ? mergeRows(r.loads, maxRows) : applyServerFields(prev, r.loads)));
     }
     if (r.profile) setProfile(r.profile);
     if (r.error) setMessage("Couldn't load data: " + r.error);
@@ -145,7 +150,6 @@ export default function Page() {
   }, [checking]);
 
   const filled = useMemo(() => rows.filter((r) => !rowEmpty(r)).length, [rows]);
-  const maxRows = profile?.max_rows ?? 30;
   const overCap = filled > maxRows;
 
   // ---- Save & Check throttle -------------------------------------------
@@ -191,7 +195,7 @@ export default function Page() {
       if (field === "appt_at" && !row.alert_unlinked) row.deadline = value;
       if (field === "deadline") row.alert_unlinked = true;
       next[i] = row;
-      return withSpare(next);
+      return withSpare(next, maxRows);
     });
   }
 
@@ -207,7 +211,7 @@ export default function Page() {
     setRows((prev) => {
       const next = prev.slice();
       next[i] = blankRow(next[i].position);
-      return withSpare(next);
+      return withSpare(next, maxRows);
     });
     setMessage("Row cleared — it leaves the database on the next save.");
   }
@@ -254,7 +258,7 @@ export default function Page() {
         fill(j, parsed[pi++]);
         j++;
       }
-      return withSpare(next);
+      return withSpare(next, maxRows);
     });
     let msg = `Added ${parsed.length} stop${parsed.length === 1 ? "" : "s"}. Add the truck # or Live Share link, then Save.`;
     if (assumed) msg += ` ${assumed} had no time — set to 23:59; adjust if needed.`;
@@ -286,7 +290,7 @@ export default function Page() {
       if (res.error) return setMessage("Save failed: " + res.error);
       // The PUT response IS the server's post-save truth, so a full rebuild is
       // correct here (unlike the poll).
-      if (res.loads) setRows(mergeRows(res.loads));
+      if (res.loads) setRows(mergeRows(res.loads, maxRows));
       if (res.profile) setProfile(res.profile);
       setLockedAt(Date.now());
       setMessage(
@@ -402,8 +406,10 @@ export default function Page() {
       <div className="card">
         <div className="toolbar">
           <span className="status-line">
-            {loading ? "Loading…" : `${filled} of ${maxRows} rows used`}
-            {overCap ? " — over your row limit, extra rows won't save" : ""}
+            {loading
+              ? "Loading…"
+              : `${filled} of ${maxRows} loads used — max ${maxRows} rows`}
+            {overCap ? " — over the limit, extra rows won't save" : ""}
           </span>
           <div className="toolbar-actions">
             <button className="btn ghost pale" onClick={() => setShowHelp((v) => !v)}>
@@ -638,6 +644,28 @@ export default function Page() {
                   </tr>
                 );
               })}
+              {/* Tells the user the table isn't finished at the last blank row.
+                  Hidden at the cap, because at that point there genuinely are
+                  no more rows coming and an ellipsis would be a lie. */}
+              {rows.length < maxRows ? (
+                <tr className="more-row">
+                  <td colSpan={13} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                    <span className="more-dots">…</span>
+                    <span className="more-text">
+                      {maxRows - rows.length} more row
+                      {maxRows - rows.length === 1 ? "" : "s"} available
+                    </span>
+                  </td>
+                </tr>
+              ) : (
+                <tr className="more-row">
+                  <td colSpan={13}>
+                    <span className="more-text">
+                      Row limit reached — {maxRows} of {maxRows}.
+                    </span>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
