@@ -366,11 +366,23 @@ export default function Page() {
   return (
     <div className="wrap">
       <div className="header">
-        <div>
-          <h1 className="title">TruckOn.site</h1>
-          <p className="subtitle">
-            Let us monitor your loads and alert you as soon as ETA is delayed.
-          </p>
+        <div className="brand">
+          {/* Plain <img> rather than next/image: this is a fixed-size static
+              asset, so the optimiser buys nothing, and explicit width/height
+              means the header never reflows once the logo decodes. */}
+          <img
+            src="/logo.png"
+            alt=""
+            width={1200}
+            height={397}
+            className="brand-mark"
+          />
+          <div>
+            <h1 className="title">TruckOn.site</h1>
+            <p className="subtitle">
+              Let us monitor your loads and alert you as soon as ETA is delayed.
+            </p>
+          </div>
         </div>
         <div className="header-right">
           {profile ? <Balance balanceCents={profile.balance_cents || 0} /> : null}

@@ -56,7 +56,8 @@ export default function LoginPage() {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <h1 className="auth-title">Load Tracker</h1>
+        <img src="/logo.png" alt="" width={1200} height={397} className="auth-mark" />
+        <h1 className="auth-title">TruckOn.site</h1>
         <p className="auth-sub">Sign in to see your loads.</p>
 
         <label className="auth-label" htmlFor="email">

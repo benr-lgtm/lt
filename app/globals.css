@@ -45,6 +45,26 @@ html, body {
   margin-bottom: 8px;
 }
 
+/* Logo + wordmark. align-items:center rather than the header's flex-end so the
+   illustration sits against the middle of the two text lines instead of
+   bottoming out level with the subtitle. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* height:auto with an explicit width keeps the 3:1 aspect while still letting
+   the width/height attributes reserve space before decode. */
+.brand-mark {
+  width: 132px;
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.auth-mark { display: block; width: 150px; height: auto; margin: 0 0 10px; }
+
 .title {
   font-size: 30px;
   font-weight: 700;
@@ -538,5 +558,10 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 @media (max-width: 640px) {
   .wrap { padding: 28px 14px 60px; }
   .title { font-size: 24px; }
+  /* A 132px illustration next to a 24px title crowds a phone header, and the
+     wordmark is what identifies the app — so the mark shrinks rather than the
+     text wrapping under it. */
+  .brand-mark { width: 88px; }
+  .brand { gap: 10px; }
   .email-box { min-width: 0; width: 100%; }
 }
