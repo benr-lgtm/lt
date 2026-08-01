@@ -119,6 +119,30 @@ Lake Elmo, MN 55042`}</pre>
           charged.
         </li>
       </ul>
+
+      <div className="instructions-video">
+        <p className="instructions-note-lead">Watch it done</p>
+        {/*
+          preload="none" is deliberate: this panel is collapsed by default and
+          most sessions never open it, so the video must not cost every visitor
+          a download. The poster is a still frame, so there is something to look
+          at before anything is fetched.
+        */}
+        <video
+          controls
+          preload="none"
+          poster="/instructions-poster.png"
+          className="instructions-player"
+        >
+          <source src="/instructions.mp4" type="video/mp4" />
+          Your browser can&rsquo;t play this video.{" "}
+          <a href="/instructions.mp4">Download it instead</a>.
+        </video>
+        <p className="instructions-video-note">
+          Three minutes, no sound needed — pasting a load block, adding the truck
+          #, and what happens after Save &amp; Check.
+        </p>
+      </div>
     </div>
   );
 }

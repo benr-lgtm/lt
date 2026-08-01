@@ -676,6 +676,27 @@ input:disabled { background: var(--disabled-bg); color: var(--disabled-ink); cur
 }
 /* Inline format samples. Monospace so "0800" reads as a literal to type, not
    as prose. */
+/* ---------- instructions video ---------- */
+.instructions-video { margin-top: 20px; padding-top: 4px; border-top: 1px solid var(--line); }
+.instructions-player {
+  display: block;
+  width: 100%;
+  /* Capped so it doesn't dominate a wide screen — the panel is reference
+     material, not a cinema. 16:9-ish matches the 1600x866 source. */
+  max-width: 860px;
+  aspect-ratio: 1600 / 866;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel-2);
+  margin-top: 8px;
+}
+.instructions-video-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 0;
+  max-width: 860px;
+}
+
 .instructions-notes code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;

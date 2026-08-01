@@ -5,3 +5,9 @@ node_modules/
 .vercel
 .DS_Store
 npm-debug.log*
+
+# Raw video sources. GitHub rejects files over 100 MB outright, and the
+# compressed copy in public/ is what the site actually serves.
+instructionsVideo.mp4
+*.mov
+*.mkv
