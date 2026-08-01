@@ -1,4 +1,5 @@
 import { getSessionUser, unauthorized } from "../../../lib/supabaseServer";
+import { tzFromCoords } from "../../../lib/samsara";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,7 +35,7 @@ export async function GET() {
     .from("loads")
     .select(
       "id,position,name,kind,truck_number,samsara_url,destination,notes,appt_at,deadline," +
-        "status,status_note,eta_display,eta_iso,dest_tz,miles_left,last_place," +
+        "status,status_note,eta_display,eta_iso,dest_lat,dest_lng,miles_left,last_place," +
         "arrived_at,checkin_state,charged_at,deleted_at,updated_at"
     )
     .or(`deleted_at.not.is.null,arrived_at.not.is.null`)
@@ -69,6 +70,9 @@ export async function GET() {
     retentionDays: RETENTION_DAYS,
     loads: (loads || []).map((l) => ({
       ...l,
+      // Computed from the coordinates by an offline lookup — there is no
+      // dest_tz column, and asking Postgres for one is what broke this page.
+      dest_tz: tzFromCoords(l.dest_lat, l.dest_lng),
       cleared: !!l.deleted_at,
       // Days left before this row is purged — shown so nobody assumes the
       // archive is permanent.

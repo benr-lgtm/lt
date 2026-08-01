@@ -270,13 +270,13 @@ export async function PUT(req) {
     if (deletions.length) {
       // Retire, don't destroy. A cleared row keeps its load block, appointment
       // and tracking result for a week on the History page — clearing the wrong
-      // line used to be unrecoverable. next_check_at is cleared so a retired row
-      // can never be swept by the checker again.
-      const { error } = await supabase
-        .from("loads")
-        .update({ deleted_at: new Date().toISOString(), next_check_at: null })
-        .in("position", deletions)
-        .is("deleted_at", null);
+      // line used to be unrecoverable.
+      //
+      // Done in SQL rather than a PostgREST update because the row must also be
+      // moved out of the live position space (position = -id). Leaving it on
+      // its old position would collide with the next load saved there, since
+      // ON CONFLICT needs a plain unique index over (user_id, position).
+      const { error } = await supabase.rpc("retire_loads", { p_positions: deletions });
       if (error) throw error;
     }
     if (upserts.length) {
@@ -318,12 +318,9 @@ export async function DELETE() {
   const session = await getSessionUser();
   if (!session) return unauthorized();
   const { supabase } = session;
-  // Same as clearing one row: retired for a week, not destroyed.
-  const { error } = await supabase
-    .from("loads")
-    .update({ deleted_at: new Date().toISOString(), next_check_at: null })
-    .gte("position", 0)
-    .is("deleted_at", null);
+  // Same as clearing one row: retired for a week, not destroyed. A null array
+  // means "every live row of mine" — RLS keeps that to the caller's own rows.
+  const { error } = await supabase.rpc("retire_loads", { p_positions: null });
   if (error) return Response.json({ error: error.message }, { status: 500 });
   return Response.json({ ok: true, loads: [] });
 }
