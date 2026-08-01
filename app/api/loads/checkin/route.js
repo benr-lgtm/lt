@@ -21,13 +21,30 @@ export async function POST(req) {
     return Response.json({ error: "Bad state." }, { status: 400 });
   }
 
+  const now = new Date().toISOString();
   const patch = {
     checkin_state: state,
-    checkin_prompted_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    checkin_prompted_at: now,
+    updated_at: now,
   };
-  // Only stop tracking when the stop is genuinely complete.
-  if (state === "checked_in") patch.next_check_at = null;
+
+  if (state === "checked_in") {
+    // Only stop tracking when the stop is genuinely complete.
+    patch.next_check_at = null;
+
+    // ...and say so on the row.
+    //
+    // This previously stopped tracking and took the money but left `status`
+    // untouched, so a row froze at whatever the last ETA check had decided.
+    // Loads that were delivered ON TIME sat there reading "Late" indefinitely —
+    // finished, paid for, tracking stopped, and still showing an alarm. The
+    // driver confirming they are at the facility is better evidence of arrival
+    // than any distance calculation, so it is recorded as one.
+    patch.status = "arrived";
+    patch.status_note = "Closed by driver check-in.";
+    patch.miles_left = 0;
+    patch.alerted = false;
+  }
 
   // RLS scopes this to the caller's own rows; the id alone is not authority.
   // Selecting the updated row back means the charge below can only ever run for
@@ -41,6 +58,12 @@ export async function POST(req) {
     .maybeSingle();
   if (error) return Response.json({ error: error.message }, { status: 500 });
   if (!updated) return Response.json({ error: "Load not found." }, { status: 404 });
+
+  // Stamp the arrival time only if GPS hadn't already caught it, so a real
+  // detected arrival keeps its own (earlier, more accurate) timestamp.
+  if (state === "checked_in" && !updated.arrived_at) {
+    await supabase.from("loads").update({ arrived_at: now }).eq("id", loadId).is("arrived_at", null);
+  }
 
   // Check-in is a completion, so this is where a checked-in row is billed. A
   // row that already arrived was charged then; chargeForRow is idempotent

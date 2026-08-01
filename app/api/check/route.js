@@ -10,7 +10,12 @@ import {
 } from "../../../lib/samsara";
 import { fetchShareLocation } from "../../../lib/samsaraShare";
 import { geocode, estimateEta, haversineMiles, ARRIVAL_MILES } from "../../../lib/maps";
-import { sendLateEmail, sendCheckinEmail, recipientsFor } from "../../../lib/email";
+import {
+  sendLateEmail,
+  sendCheckinEmail,
+  sendTrackingLostEmail,
+  recipientsFor,
+} from "../../../lib/email";
 import { nextCheckAt, slackMsFrom, graceMs } from "../../../lib/scheduler";
 import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
@@ -39,6 +44,9 @@ const ARRIVAL_NEAR_MILES = Number(process.env.ARRIVAL_NEAR_MILES || 0.5);
 const ARRIVAL_DWELL_MS = Number(process.env.ARRIVAL_DWELL_MIN || 15) * 60 * 1000;
 // GPS jitter keeps a parked truck reading a fraction of a mph rather than zero.
 const STOPPED_MPH = Number(process.env.STOPPED_MPH || 2);
+// How far past its closest approach a truck must be before we call it departed.
+// Wide enough that GPS jitter and a circuit of a large yard never qualify.
+const DEPARTED_MARGIN_MILES = Number(process.env.DEPARTED_MARGIN_MILES || 3);
 
 // ---- Runaway guard -------------------------------------------------------
 //
@@ -82,11 +90,40 @@ export async function GET(req) {
 
     const results = [];
     const byUser = groupBy(due || [], (l) => l.user_id);
+    let deferred = 0;
 
-    for (const [userId, loads] of byUser) {
+    // Stop before Vercel does.
+    //
+    // Rows are processed one at a time and each makes several HTTP calls
+    // (share link, ORS, Mapbox, sometimes history). At CHECK_BATCH=40 that is
+    // ~200 sequential calls — fine at 300ms each, over the 60s limit at 500ms.
+    // A timeout would kill the invocation mid-row: the rows already done keep
+    // their results, the rest are silently skipped, and nothing records that
+    // the sweep was cut short.
+    //
+    // Yielding voluntarily is strictly better. Whatever we do not reach keeps
+    // its past-due next_check_at and is simply first in the queue two minutes
+    // later, so the work drains rather than being dropped.
+    const started = Date.now();
+    const BUDGET_MS = Number(process.env.CHECK_BUDGET_MS || 45000);
+
+    outer: for (const [userId, loads] of byUser) {
       const ctx = await userContext(supabase, userId, loads);
       for (const load of loads) {
-        results.push(await checkOne(supabase, load, ctx));
+        if (Date.now() - started > BUDGET_MS) {
+          deferred = (due?.length || 0) - results.length;
+          break outer;
+        }
+        try {
+          results.push(await checkOne(supabase, load, ctx));
+        } catch (e) {
+          // checkOne handles its own failures, but the recovery path itself can
+          // throw (a database hiccup while writing the error). Without this
+          // guard one unlucky row aborts the entire sweep, so every remaining
+          // load goes unchecked — and it would do so again on every tick,
+          // because the same row is always first in the due queue.
+          results.push({ id: load.id, position: load.position, status: "error", error: e.message });
+        }
       }
     }
 
@@ -94,7 +131,16 @@ export async function GET(req) {
     // separately from the ETA work.
     const checkins = await sweepCheckins(supabase);
 
-    return Response.json({ checked: results.length, checkins, results });
+    // `deferred` is the number left for the next tick. A value that stays high
+    // across sweeps means the batch cannot keep up — raise CHECK_BATCH, or the
+    // budget, or both.
+    return Response.json({
+      checked: results.length,
+      deferred,
+      elapsedMs: Date.now() - started,
+      checkins,
+      results,
+    });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }
@@ -141,11 +187,11 @@ async function checkOne(supabase, load, ctx) {
   try {
     // ---- 1. where is the truck? ----
     const pos = await resolvePosition(load, ctx);
-    if (pos.error) return fail(supabase, load, pos.error, out);
+    if (pos.error) return fail(supabase, load, pos.error, out, null, ctx);
 
     // ---- 2. where is it going? ----
     const dest = await resolveDestination(supabase, load, pos);
-    if (dest.error) return fail(supabase, load, dest.error, out, pos);
+    if (dest.error) return fail(supabase, load, dest.error, out, pos, ctx);
 
     // ---- 3. arrival is pure geometry — costs no API quota ----
     const straightMiles = haversineMiles(
@@ -172,6 +218,31 @@ async function checkOne(supabase, load, ctx) {
     // and check-in remains the way to close it.
     const destTrusted = (dest.precision || "point") === "point";
 
+    // Nearest approach ever recorded for this stop.
+    const closestMiles =
+      straightMiles == null
+        ? load.closest_miles
+        : Math.min(straightMiles, load.closest_miles ?? Infinity);
+
+    // Came and went.
+    //
+    // Sampling can miss the arrival itself; it cannot miss the shape of the
+    // trip. If this truck was once within the arrival radius and is now well
+    // outside it and climbing, the stop happened between two looks. Continuing
+    // to measure "distance to the destination" for a truck driving away from a
+    // completed stop is what produced ETAs receding into next week and rows
+    // reading Late on loads delivered hours early.
+    //
+    // DEPARTED_MARGIN_MILES keeps GPS jitter and a lap of the yard from
+    // counting as a departure.
+    const departed =
+      destTrusted &&
+      pos.precision === "exact" &&
+      straightMiles != null &&
+      closestMiles != null &&
+      closestMiles < ARRIVAL_NEAR_MILES &&
+      straightMiles > closestMiles + DEPARTED_MARGIN_MILES;
+
     const arrivedClose =
       destTrusted && pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_MILES;
     // Speed is only present for truck#/Samsara-API rows. Live Share rows have
@@ -186,7 +257,7 @@ async function checkOne(supabase, load, ctx) {
       backfill = await historyBackfill(load, dest, ctx);
     }
 
-    if (arrivedClose || arrivedDwell || backfill) {
+    if (arrivedClose || arrivedDwell || backfill || departed) {
       // Arrival is completion, and completion is when the row is billed. This
       // is the only place an ordinary delivery gets charged; a load that never
       // reaches its destination is never charged at all.
@@ -211,8 +282,13 @@ async function checkOne(supabase, load, ctx) {
           // Say which rule fired: "arrived" a quarter-mile from the pin looks
           // like a bug unless the row explains that the truck has been parked
           // there for twenty minutes.
+          closest_miles: closestMiles,
           status_note: arrivedClose
             ? null
+            : departed && !backfill
+            ? `Delivered between checks — came within ${Number(closestMiles).toFixed(
+                2
+              )} mi and has since moved on.`
             : backfill
             ? `Confirmed from Samsara history — parked ${backfill.miles.toFixed(
                 2
@@ -373,13 +449,18 @@ async function checkOne(supabase, load, ctx) {
         dest_span_miles: dest.spanMiles ?? null,
         // Carried on every check so the dwell clock survives to the next one.
         stopped_since: stoppedSince,
+        closest_miles: closestMiles,
         checkin_due_at: checkinDueAt(load, tz),
-        next_check_at: nextCheckAt({ slackMs: slack }),
+        // Remaining drive time matters as much as slack: a truck 20 minutes
+        // out is about to arrive whatever its buffer, and missing that moment
+        // is how a row ends up measuring the distance to a stop it already
+        // completed and left.
+        next_check_at: nextCheckAt({ slackMs: slack, etaMs: est.seconds * 1000 }),
       },
       pos,
     });
   } catch (e) {
-    return fail(supabase, load, e.message?.slice(0, 200) || "check failed", out);
+    return fail(supabase, load, e.message?.slice(0, 200) || "check failed", out, null, ctx);
   }
 }
 
@@ -515,6 +596,9 @@ async function finish(supabase, load, { patch, pos, ...rest }) {
       // would accumulate across unrelated outages and eventually make a healthy
       // row give up over failures it had already recovered from.
       fail_count: 0,
+      // A link that comes back to life is allowed to raise the alarm again if
+      // it dies a second time.
+      blackout_alerted: false,
       ...patch,
       truck_at: pos?.formatted ?? load.truck_at,
       last_lat: pos?.lat ?? load.last_lat,
@@ -553,7 +637,7 @@ const MAX_FAILS = Number(process.env.MAX_CONSECUTIVE_FAILS || 5);
  * consecutive failure (30m, 1h, 2h, 4h…), permanent errors stop immediately,
  * and anything still failing after MAX_FAILS stops and says so.
  */
-async function fail(supabase, load, note, out, pos = null) {
+async function fail(supabase, load, note, out, pos = null, ctx = null) {
   const text = String(note);
   const permanent = PERMANENT_FAILURES.some((re) => re.test(text));
   const fails = (load.fail_count || 0) + 1;
@@ -569,12 +653,42 @@ async function fail(supabase, load, note, out, pos = null) {
     ? ` Stopped after ${fails} failed attempts — fix the row and press Save & Check.`
     : "";
 
+  // Tell someone the load has gone dark.
+  //
+  // Only when tracking has actually STOPPED (giveUp), only for a row that was
+  // working before — `eta_iso` proves at least one successful check — and only
+  // once. A row that never tracked was already reported at save time, so
+  // emailing about it again would just be noise. A load that has arrived, or is
+  // already closed, needs no alarm.
+  let blackoutAlerted = load.blackout_alerted;
+  const wasTracking = !!load.eta_iso || load.last_lat != null;
+  const alertOn = load.alert_enabled !== false;
+  if (giveUp && wasTracking && alertOn && !load.arrived_at && !load.blackout_alerted) {
+    const to = recipientsFor(ctx?.profile, "alert");
+    if (to.length) {
+      try {
+        const tz = tzFromCoords(load.dest_lat, load.dest_lng) || FALLBACK_TZ;
+        const res = await sendTrackingLostEmail({
+          to,
+          load: { ...load, timeZone: tz },
+          reason: text.slice(0, 180),
+        });
+        if (res.sent.length > 0) blackoutAlerted = true;
+      } catch (e) {
+        // Never let the alert failure hide the underlying problem — the row
+        // still records why tracking stopped.
+        out.blackoutEmailError = String(e.message).slice(0, 150);
+      }
+    }
+  }
+
   await supabase
     .from("loads")
     .update({
       status: "error",
       status_note: (text.slice(0, 200 - suffix.length) + suffix).slice(0, 200),
       fail_count: fails,
+      blackout_alerted: blackoutAlerted,
       next_check_at: giveUp ? null : new Date(Date.now() + backoffMs).toISOString(),
       last_lat: pos?.lat ?? load.last_lat,
       last_lng: pos?.lng ?? load.last_lng,

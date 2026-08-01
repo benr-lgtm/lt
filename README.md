@@ -11,10 +11,14 @@ The app tracks each load's ETA and **emails you if it slips past the deadline**.
 - **Frontend + API:** Next.js on **Vercel**
 - **Storage:** **Supabase** (Postgres)
 - **Truck location (truck #):** **Samsara API** (read-only, one or more accounts)
-- **ETA math (truck #):** **Mapbox** (free tier) — or Google, your choice
-- **ETA (Live Share link):** read directly off the public Samsara page (headless)
+- **Truck location (Live Share):** Samsara's public share endpoint, read server-side
+- **Route + distance:** **OpenRouteService** `driving-hgv`, with dry-van
+  height/weight restrictions so a 13'6" trailer is never routed under a low bridge
+- **Speed along that route:** **Mapbox** — live traffic on the final approach,
+  free-flow beyond it
+- **Geocoding:** **Nominatim** → ORS → Google, best precision wins
 - **Email:** **Resend**
-- **Scheduler:** **UptimeRobot** pings the check endpoint every 5 minutes
+- **Scheduler:** **Supabase `pg_cron`** calls `/api/check` every 2 minutes
 
 ## How it works (hybrid)
 
@@ -115,21 +119,53 @@ Alert recipients are configured per account in **Settings**, not by an env var.
 
 4. **Deploy.** You'll get a URL like `https://load-tracker-xxx.vercel.app`.
 
-> **Live Share links & Vercel Hobby.** Reading a pasted link renders a headless
-> browser, which is heavy. On Vercel's free Hobby tier (10s function limit) keep
-> `CHECK_BATCH_LINKS` at `1`–`2`; on Pro (60s) you can raise it. Truck-# loads
-> aren't affected — they always all refresh. If you have many link-based loads,
-> set `BROWSER_WS_ENDPOINT` to a hosted browser (e.g. Browserless) to lift the
-> limit.
+> **Vercel Hobby is for personal, non-commercial use.** The moment TruckOn has
+> paying customers you need Pro — a licensing limit, not a technical one.
+> `CHECK_BATCH` (default 40) caps how many rows one sweep touches, which keeps
+> each invocation inside the function time limit.
 
-### 6. UptimeRobot (the scheduler)
+### 6. The scheduler (Supabase pg_cron)
+
+The checker is driven from **inside Postgres**, not by an external pinger.
+`cron.job` runs `public.run_due_checks()` every 2 minutes, which reads
+`public.worker_config` and calls your `/api/check` URL via `pg_net`:
+
+```sql
+-- one row, holding the URL and secret the cron posts to
+select * from public.worker_config;
+-- the schedule itself
+select jobid, schedule, jobname, active from cron.job;
+```
+
+Each sweep only touches rows whose `next_check_at` has come due, so firing
+every 2 minutes is cheap — most ticks find nothing to do. The interval per row
+is chosen from its slack: hours of buffer means a 3-hour cadence, a load running
+tight is checked every 5 minutes.
+
+> **Do not point an external pinger at `/api/check`.** The URL carries
+> `CHECK_SECRET` in the query string, and a second caller would double the sweep
+> rate — the one thing that actually consumes routing quota.
+
+### 7. Uptime monitoring (optional, recommended)
+
+You do **not** need an external pinger to keep the app awake. Vercel functions
+are invoked on demand and never idle out, and the 2-minute cron keeps the
+Supabase project active so it never hits the 7-day pause.
+
+What is worth monitoring is the opposite problem: **the cron dying silently.**
+If it stops, pages still serve, the table still renders, and nothing is being
+tracked. `/api/health` is built to catch exactly that — it reports how long the
+oldest overdue row has been waiting and returns **503** once that exceeds
+`HEALTH_STALL_MINUTES` (default 15).
+
 1. Sign up at [uptimerobot.com](https://uptimerobot.com) (free).
 2. **Add New Monitor** → **HTTP(s)**.
-3. URL: `https://YOUR-APP.vercel.app/api/check?key=YOUR_CHECK_SECRET`
-4. Interval: **5 minutes**. Save.
+3. URL: `https://truckon.site/api/health` — no secret in it, safe to monitor.
+4. Interval: 5 minutes. Any non-2xx means either the database is unreachable
+   (500) or tracking has stalled (503).
 
-Done. Every 5 minutes it refreshes ETAs, and you get an email the moment a load
-is projected to miss its deadline.
+The same endpoint also reports missing environment variables and warns if
+`RESEND_FROM` still carries an old brand name.
 
 ## Using it
 1. Open your Vercel URL.

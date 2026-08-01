@@ -619,7 +619,8 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 /* ---------- balance chip + ledger panel ---------- */
 .balance-wrap { position: relative; }
 .balance-btn {
-  display: flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
+  text-decoration: none;
   font-size: 18px; font-weight: 700; padding: 6px 12px; border-radius: 999px;
   background: var(--green-bg); color: var(--green);
   border: 1px solid transparent; cursor: pointer; font-family: inherit;
@@ -631,33 +632,8 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 
 /* Anchored to the chip and right-aligned so it can never run off the viewport
    edge on a narrow window, which a left-aligned dropdown here would. */
-.balance-panel {
-  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
-  width: 380px; max-width: calc(100vw - 32px);
-  max-height: 70vh; overflow-y: auto;
-  background: #fff; border: 1px solid var(--line-strong); border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(16, 24, 40, 0.18);
-  padding: 16px 18px 14px; text-align: left;
-}
-.balance-panel-head { display: flex; justify-content: space-between; align-items: flex-start; }
-.balance-big { font-size: 26px; font-weight: 700; line-height: 1.1; }
-.balance-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.balance-close {
-  background: none; border: 0; font-size: 22px; line-height: 1;
-  color: var(--muted); cursor: pointer; padding: 0 2px;
-}
-.balance-note {
-  font-size: 12px; color: var(--muted); line-height: 1.5;
-  margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid var(--line);
-}
-.balance-note.topup { margin-bottom: 0; }
-.balance-section {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.07em; color: var(--muted); margin: 16px 0 6px;
-}
-.balance-empty { font-size: 13px; color: var(--muted); margin: 6px 0; }
-.balance-empty.err { color: var(--red); }
-
+/* The dropdown these styles belonged to is gone; /history renders the same
+   information as a real page. */
 .balance-months { width: 100%; border-collapse: collapse; font-size: 13px; }
 .balance-months td { padding: 5px 0; border-bottom: 1px solid var(--line); }
 .balance-months td.muted { color: var(--muted); font-size: 12px; text-align: center; }
