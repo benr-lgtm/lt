@@ -219,6 +219,10 @@ export default function Page() {
   const [message, setMessage] = useState("");
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Positions the server currently has rows for. The on-screen table is not a
+  // reliable record of this: it shrinks as it empties, so it can forget rows
+  // that still exist in the database.
+  const serverPositions = useRef(new Set());
 
   // Declared before refresh() so every row-building call site can be given the
   // account's cap. An admin can lower it per profile; MAX_ROWS is the default.
@@ -230,6 +234,7 @@ export default function Page() {
   async function refresh({ full = false } = {}) {
     const r = await fetch("/api/loads").then((x) => x.json());
     if (r.loads) {
+      serverPositions.current = new Set(r.loads.map((l) => l.position));
       setRows((prev) => (full ? mergeRows(r.loads, maxRows) : applyServerFields(prev, r.loads)));
     }
     if (r.profile) setProfile(r.profile);
@@ -344,6 +349,7 @@ export default function Page() {
     try {
       const res = await fetch("/api/loads", { method: "DELETE" }).then((r) => r.json());
       if (res.error) return setMessage("Clear failed: " + res.error);
+      serverPositions.current = new Set();
       setRows(Array.from({ length: MIN_ROWS }, (_, i) => blankRow(i)));
       setMessage("All loads cleared.");
     } finally {
@@ -404,6 +410,35 @@ export default function Page() {
         alert_enabled: r.alert_enabled,
         checkin_enabled: r.checkin_enabled,
       }));
+
+      // Deletions are expressed as "this position is now empty", so a position
+      // the server holds MUST appear in the payload to be removed.
+      //
+      // The table shrinks when it empties out — withSpare keeps only MIN_ROWS
+      // plus a few spares — so clearing the last rows dropped them from the
+      // array before this ran. They vanished from the screen, were never sent,
+      // and came straight back on the next refresh. That is why the bottom
+      // rows would not delete no matter how many times you tried.
+      //
+      // Anything the server knows about and the screen no longer shows is
+      // therefore added back as an explicit blank.
+      const sent = new Set(payload.map((p) => p.position));
+      for (const pos of serverPositions.current) {
+        if (sent.has(pos)) continue;
+        payload.push({
+          position: pos,
+          name: "",
+          kind: "delivery",
+          appt_at: "",
+          deadline: "",
+          alert_unlinked: false,
+          source: "",
+          destination: "",
+          notes: "",
+          alert_enabled: true,
+          checkin_enabled: false,
+        });
+      }
       const res = await fetch("/api/loads", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -412,7 +447,10 @@ export default function Page() {
       if (res.error) return setMessage("Save failed: " + res.error);
       // The PUT response IS the server's post-save truth, so a full rebuild is
       // correct here (unlike the poll).
-      if (res.loads) setRows(mergeRows(res.loads, maxRows));
+      if (res.loads) {
+        serverPositions.current = new Set(res.loads.map((l) => l.position));
+        setRows(mergeRows(res.loads, maxRows));
+      }
       if (res.profile) setProfile(res.profile);
       setLockedAt(Date.now());
       // A bad link is not a failed save — the rest of the table is fine — but
