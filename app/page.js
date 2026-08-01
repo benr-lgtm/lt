@@ -670,7 +670,7 @@ export default function Page() {
                 </th>
                 <th className="col-status">Status</th>
                 <th className="col-checkin">Check-in</th>
-                <th>Truck # or link</th>
+                <th>Link or truck #</th>
                 <th className="col-stop">PASTE HERE 🔽</th>
                 <th className="col-half">ALERT IF LATER THAN…</th>
                 <th className="col-mail">Email alerts</th>
@@ -787,7 +787,10 @@ export default function Page() {
                     <td>
                       <input
                         className={"source-input" + (badLink ? " invalid" : "")}
-                        placeholder="3040 or Samsara link"
+                        // Leads with the link shape, matching the column: it is
+                        // the harder of the two to get right, and seeing the
+                        // expected form is what stops a truncated paste.
+                        placeholder="https://cloud... or 3040"
                         value={r.source}
                         onChange={(e) => update(i, "source", e.target.value)}
                         aria-invalid={badLink ? "true" : undefined}
