@@ -7,6 +7,7 @@ import { getBrowserSupabase } from "../lib/supabaseBrowser";
 import Instructions from "./Instructions";
 import Settings from "./Settings";
 import Balance from "./Balance";
+import ThemeToggle from "./ThemeToggle";
 import {
   MIN_ROWS,
   MAX_ROWS,
@@ -562,6 +563,7 @@ export default function Page() {
           </div>
         </div>
         <div className="header-right">
+          <ThemeToggle />
           {profile ? <Balance balanceCents={profile.balance_cents || 0} /> : null}
           <button className="btn secondary" onClick={() => setShowSettings(true)}>
             Settings

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import ThemeToggle from "../ThemeToggle";
 
 // History: past loads and the billing record, in one place.
 //
@@ -76,6 +77,7 @@ export default function HistoryPage() {
           </div>
         </div>
         <div className="header-right">
+          <ThemeToggle />
           {data ? (
             <span className={"balance-btn" + (data.balance_cents < 0 ? " negative" : "")}>
               {money(data.balance_cents)}
