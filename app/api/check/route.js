@@ -511,6 +511,10 @@ async function finish(supabase, load, { patch, pos, ...rest }) {
   await supabase
     .from("loads")
     .update({
+      // Any successful check ends the failure streak. Without this the counter
+      // would accumulate across unrelated outages and eventually make a healthy
+      // row give up over failures it had already recovered from.
+      fail_count: 0,
       ...patch,
       truck_at: pos?.formatted ?? load.truck_at,
       last_lat: pos?.lat ?? load.last_lat,
@@ -525,21 +529,60 @@ async function finish(supabase, load, { patch, pos, ...rest }) {
   return rest;
 }
 
-// A failing row must not be retried in a hot loop — back it off to 30 minutes.
+// Failures that will never fix themselves on a retry. Re-checking these is
+// pure waste — the row needs a person, not another attempt.
+const PERMANENT_FAILURES = [
+  /not a recognizable samsara live share link/i,
+  /add a truck # or a live share link/i,
+  /destination required/i,
+  /share link returned no data/i, // expired or revoked link
+];
+
+// Give up after this many consecutive failures even for retryable errors. Five
+// tries spans about eight hours with the backoff below — long enough to ride
+// out a provider outage, short enough that a genuinely dead row stops costing
+// anything the same day.
+const MAX_FAILS = Number(process.env.MAX_CONSECUTIVE_FAILS || 5);
+
+/**
+ * Record a failed check and decide whether it is worth trying again.
+ *
+ * The old version rescheduled every failure 30 minutes out, unconditionally and
+ * forever — so a mistyped link retried 48 times a day for the life of the row,
+ * and the UI never said it had stopped hoping. Now the delay grows with each
+ * consecutive failure (30m, 1h, 2h, 4h…), permanent errors stop immediately,
+ * and anything still failing after MAX_FAILS stops and says so.
+ */
 async function fail(supabase, load, note, out, pos = null) {
+  const text = String(note);
+  const permanent = PERMANENT_FAILURES.some((re) => re.test(text));
+  const fails = (load.fail_count || 0) + 1;
+  const exhausted = fails >= MAX_FAILS;
+  const giveUp = permanent || exhausted;
+
+  // 30m, 1h, 2h, 4h, 8h — capped so it never schedules absurdly far out.
+  const backoffMs = Math.min(30 * 60 * 1000 * 2 ** (fails - 1), 8 * 60 * 60 * 1000);
+
+  const suffix = permanent
+    ? " Fix the row and press Save & Check."
+    : exhausted
+    ? ` Stopped after ${fails} failed attempts — fix the row and press Save & Check.`
+    : "";
+
   await supabase
     .from("loads")
     .update({
       status: "error",
-      status_note: String(note).slice(0, 200),
-      next_check_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      status_note: (text.slice(0, 200 - suffix.length) + suffix).slice(0, 200),
+      fail_count: fails,
+      next_check_at: giveUp ? null : new Date(Date.now() + backoffMs).toISOString(),
       last_lat: pos?.lat ?? load.last_lat,
       last_lng: pos?.lng ?? load.last_lng,
       last_place: pos?.formatted ?? load.last_place,
       updated_at: new Date().toISOString(),
     })
     .eq("id", load.id);
-  return { ...out, status: "error", error: note };
+  return { ...out, status: "error", error: note, gaveUp: giveUp };
 }
 
 // Rows whose check-in window has opened: mark them due, and email once if the

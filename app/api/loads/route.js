@@ -1,5 +1,5 @@
 import { getSessionUser, unauthorized } from "../../../lib/supabaseServer";
-import { looksLikeShareUrl } from "../../../lib/samsaraShare";
+import { looksLikeShareUrl, shareLinkProblem } from "../../../lib/shareLink";
 import { tzFromCoords } from "../../../lib/samsara";
 import { MAX_ROWS } from "../../../lib/rows";
 
@@ -63,6 +63,7 @@ export async function PUT(req) {
 
     const upserts = [];
     const deletions = [];
+    const linkErrors = [];
     let filled = 0;
 
     for (const r of rows) {
@@ -85,6 +86,14 @@ export async function PUT(req) {
       const isLink = source && looksLikeShareUrl(source);
       const truck_number = source && !isLink ? source : null;
       const samsara_url = isLink ? source : null;
+
+      // A link that can't be read is caught HERE, not on the first check.
+      // Previously any string starting with http was accepted, stored, and
+      // scheduled — so a truncated paste or another provider's link looked
+      // saved, then failed half an hour later with the reason buried in a row
+      // tooltip, and retried every 30 minutes forever after that.
+      const linkProblem = isLink ? shareLinkProblem(source) : null;
+      if (linkProblem) linkErrors.push({ row: position + 1, message: linkProblem });
 
       const prev = byPos.get(position);
       const empty =
@@ -111,8 +120,10 @@ export async function PUT(req) {
       // Trackable means "has somewhere to look and something to be late for".
       // Note there is no affordability test any more: billing happens on
       // completion and the balance is allowed to go negative, so money can
-      // never be the reason a load silently stops being watched.
-      const trackable = !!((truck_number || samsara_url) && deadline);
+      // never be the reason a load silently stops being watched. A broken link
+      // is different: there is genuinely nowhere to look, so it is not
+      // scheduled at all rather than scheduled and failing.
+      const trackable = !!((truck_number || samsara_url) && deadline) && !linkProblem;
 
       const row = {
         user_id: user.id,
@@ -137,8 +148,8 @@ export async function PUT(req) {
       // partial key set on one row silently wipes columns on the others.
       if (changed) {
         Object.assign(row, {
-          status: "unknown",
-          status_note: null,
+          status: linkProblem ? "error" : "unknown",
+          status_note: linkProblem,
           alerted: false,
           eta_iso: null,
           eta_display: null,
@@ -216,7 +227,13 @@ export async function PUT(req) {
       .eq("id", user.id)
       .maybeSingle();
 
-    return Response.json({ loads: withTz(data), profile: publicProfile(fresh) });
+    return Response.json({
+      loads: withTz(data),
+      profile: publicProfile(fresh),
+      // Reported alongside a successful save rather than as a failure: the rest
+      // of the table saved fine, and the user needs to know which row to fix.
+      linkErrors,
+    });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }

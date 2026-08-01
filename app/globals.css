@@ -239,6 +239,17 @@ tbody tr:hover { background: #fcfcfd; }
   border-color: #c3c9d4;
 }
 .source-input:focus { border-color: var(--focus); }
+/* A link that can't be read, flagged while the clipboard is still in reach
+   rather than after a save. */
+.source-input.invalid { border-color: var(--red); background: #fffafa; }
+.field-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--red);
+  max-width: 160px;
+}
 .notes-input { width: 100%; min-width: 130px; }
 input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .kind-select { width: 108px; }

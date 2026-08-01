@@ -15,6 +15,7 @@ import {
   mergeRows,
   applyServerFields,
 } from "../lib/rows";
+import { shareLinkProblem } from "../lib/shareLink";
 
 // "America/Chicago" -> "CDT". Null until the destination has been geocoded,
 // since the zone is derived from its coordinates.
@@ -413,9 +414,22 @@ export default function Page() {
       if (res.loads) setRows(mergeRows(res.loads, maxRows));
       if (res.profile) setProfile(res.profile);
       setLockedAt(Date.now());
-      setMessage(
-        "Saved — checking now. ETAs appear on their own; you don't need to press anything again."
-      );
+      // A bad link is not a failed save — the rest of the table is fine — but
+      // it must not be reported as an unqualified success either, or the user
+      // walks away believing a load is being watched when it isn't.
+      const bad = res.linkErrors || [];
+      if (bad.length) {
+        setMessage(
+          `Saved, but ${bad.length === 1 ? "row" : "rows"} ${bad
+            .map((e) => e.row)
+            .join(", ")} ${bad.length === 1 ? "isn't" : "aren't"} being tracked — ` +
+            bad[0].message
+        );
+      } else {
+        setMessage(
+          "Saved — checking now. ETAs appear on their own; you don't need to press anything again."
+        );
+      }
       // Nudge the first refresh so a result can appear without waiting a full
       // polling interval.
       setTimeout(refresh, 4000);
@@ -568,8 +582,18 @@ export default function Page() {
             keeps running; ask your administrator to top up when convenient.
           </p>
         ) : null}
+        {/* "isn't/aren't being tracked" is the link-rejection message, which is
+            a warning rather than a failure — but it must not render green, or it
+            reads as everything being fine. */}
         {message && !checking ? (
-          <p className={"paste-result" + (/fail|error|couldn/i.test(message) ? " err" : "")}>
+          <p
+            className={
+              "paste-result" +
+              (/fail|error|couldn|isn't being tracked|aren't being tracked/i.test(message)
+                ? " err"
+                : "")
+            }
+          >
             {message}
           </p>
         ) : null}
@@ -611,6 +635,7 @@ export default function Page() {
                 const needsCheckin = r.checkin_state === "due" || r.checkin_state === "missed";
                 const stamp = timeStamp(r.updated_at);
                 const nextCheck = nextCheckInfo(r);
+                const badLink = shareLinkProblem(r.source);
                 // A check is outstanding when the worker owes this row an
                 // answer: either it has never produced one, or its scheduled
                 // time has come round and the cron hasn't swept it yet.
@@ -714,11 +739,18 @@ export default function Page() {
                     </td>
                     <td>
                       <input
-                        className="source-input"
+                        className={"source-input" + (badLink ? " invalid" : "")}
                         placeholder="3040 or Samsara link"
                         value={r.source}
                         onChange={(e) => update(i, "source", e.target.value)}
+                        aria-invalid={badLink ? "true" : undefined}
+                        title={badLink || undefined}
                       />
+                      {/* Shown as they type, not after saving. A link that
+                          can't be read is almost always a truncated copy, and
+                          the moment to say so is while the clipboard is still
+                          in reach. */}
+                      {badLink ? <span className="field-error">{badLink}</span> : null}
                     </td>
                     {/* One stop = one cell: what kind, when, which facility and
                         where. These were three columns that were always read
