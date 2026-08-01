@@ -120,7 +120,7 @@ export default function HistoryPage() {
               </p>
             ) : (
               <div className="table-scroll">
-                <table>
+                <table className="hist-table">
                   <thead>
                     <tr>
                       <th>Stop</th>
@@ -187,7 +187,7 @@ export default function HistoryPage() {
               <p className="balance-empty">No activity yet.</p>
             ) : (
               <div className="table-scroll">
-                <table>
+                <table className="hist-table">
                   <thead>
                     <tr>
                       <th>Month</th>
@@ -214,7 +214,7 @@ export default function HistoryPage() {
 
             <div className="balance-section pad">Every transaction</div>
             <div className="table-scroll">
-              <table>
+              <table className="hist-table">
                 <thead>
                   <tr>
                     <th>Date</th>

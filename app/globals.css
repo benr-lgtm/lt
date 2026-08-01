@@ -654,6 +654,54 @@ input:disabled { background: #f2f3f5; color: #aab0ba; cursor: not-allowed; }
 .ledger-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ledger-when { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
+/* ---------- history & billing page ---------- */
+/*
+ * These tables are read-only, so none of the loads table's sizing applies:
+ * no 132px rows (that height exists to fit a four-line paste cell), and no
+ * 1200px min-width (that exists because the loads table genuinely has 13
+ * columns of inputs). Scoped to .hist-table so the loads table is untouched.
+ */
+.hist-table { min-width: 0; width: 100%; }
+.hist-table thead th { padding: 10px 14px; }
+.hist-table thead th:first-child,
+.hist-table tbody td:first-child { padding-left: 18px; }
+.hist-table thead th:last-child,
+.hist-table tbody td:last-child { padding-right: 18px; }
+.hist-table tbody tr { height: auto; }
+.hist-table tbody td {
+  padding: 9px 14px;
+  font-size: 13px;
+  vertical-align: middle;
+  overflow: visible;
+}
+/* The status pill is a three-line block in the loads table; here one line of
+   result plus a timestamp is all that is wanted. */
+.hist-table .badge { padding: 4px 9px; font-size: 12px; border-radius: 8px; max-width: none; }
+.hist-table .badge .dot { margin-top: 4px; }
+.hist-table .eta-note { font-size: 10px; margin-top: 0; }
+
+.retention-note {
+  margin: 0;
+  padding: 12px 18px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #47505f;
+  background: #fbfcfd;
+  border-bottom: 1px solid var(--line);
+}
+.balance-empty { font-size: 13px; color: var(--muted); margin: 14px 18px; }
+.balance-empty.err { color: var(--red); }
+.balance-section {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--muted);
+}
+.balance-section.pad { margin: 20px 18px 8px; }
+.hist-kind { font-weight: 700; font-size: 12px; }
+.hist-dest { font-size: 13px; }
+.hist-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+/* The active tab needs to look pressed, or both read as available. */
+.btn.ghost.pale.on { background: #eef2f7; color: var(--ink); }
+
 /* ---------- admin ---------- */
 .section-title { font-size: 15px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .admin-row { display: flex; gap: 8px; padding: 14px 18px; align-items: center; }

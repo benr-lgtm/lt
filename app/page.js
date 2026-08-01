@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { parseLoads } from "../lib/parseLoads";
 import { getBrowserSupabase } from "../lib/supabaseBrowser";
 import Instructions from "./Instructions";
@@ -527,6 +528,12 @@ export default function Page() {
           <button className="btn secondary" onClick={() => setShowSettings(true)}>
             Settings
           </button>
+          {/* The balance chip also links here, but a chip showing a dollar
+              amount doesn't announce that past loads live behind it. A labelled
+              button does. */}
+          <Link className="btn secondary" href="/history">
+            History &amp; billing
+          </Link>
           <button className="btn secondary" onClick={signOut}>
             Sign out
           </button>
