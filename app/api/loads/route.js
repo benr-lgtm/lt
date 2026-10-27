@@ -78,6 +78,7 @@ export async function PUT(req) {
       if (!Number.isInteger(position) || position < 0 || position >= maxRows * 4) continue;
 
       const name = trim(r.name);
+      const load_number = trim(r.load_number);
       const kind = r.kind === "pickup" ? "pickup" : "delivery";
       const appt_at = trim(r.appt_at);
       const deadline = trim(r.deadline) || appt_at; // alert time defaults to the appointment
@@ -109,7 +110,7 @@ export async function PUT(req) {
       const telegramIntervalChanged =
         !prev || Number(prev.telegram_interval_minutes || 0) !== telegram_interval_minutes;
       const empty =
-        !name && !truck_number && !samsara_url && !destination && !deadline && !appt_at && !notes;
+        !name && !load_number && !truck_number && !samsara_url && !destination && !deadline && !appt_at && !notes;
       if (empty) {
         if (prev) deletions.push(position);
         continue;
@@ -140,6 +141,7 @@ export async function PUT(req) {
       const row = {
         user_id: user.id,
         position,
+        load_number,
         name,
         kind,
         appt_at,

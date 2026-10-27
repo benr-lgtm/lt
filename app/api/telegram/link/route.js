@@ -28,6 +28,7 @@ export async function GET() {
       expectedUrl: telegramWebhookUrl(),
       webhookUrl: webhook.url || "",
       lastError: webhook.last_error_message || null,
+      callbackUpdatesEnabled: (webhook.allowed_updates || []).includes("callback_query"),
     });
   } catch (e) {
     return Response.json({ error: e.message || "Could not read Telegram webhook status." }, { status: 503 });

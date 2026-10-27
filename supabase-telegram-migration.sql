@@ -18,6 +18,7 @@ alter table public.loads add column if not exists telegram_pending_status text;
 alter table public.loads add column if not exists telegram_late_notified_at timestamptz;
 alter table public.loads add column if not exists telegram_arrived_notified_at timestamptz;
 alter table public.loads add column if not exists telegram_group_id uuid;
+alter table public.loads add column if not exists load_number text;
 
 create index if not exists loads_telegram_group_id_idx
 	on public.loads(telegram_group_id)

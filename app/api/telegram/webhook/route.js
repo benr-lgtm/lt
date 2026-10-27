@@ -19,7 +19,7 @@ export async function POST(req) {
   try {
     const update = await req.json();
     if (update.callback_query) {
-      await handleCallback(update.callback_query);
+      await handleCallback(update.callback_query, new URL(req.url).origin);
       return Response.json({ ok: true });
     }
     const message = update.message;
@@ -140,6 +140,7 @@ async function importTelegramLoad(chatId, text) {
       user_id: profile.id,
       position: positions[index],
       telegram_group_id: groupId,
+      load_number: stop.loadNumber || null,
       name: stop.facility,
       kind: stop.kind,
       appt_at: stop.appointmentAt || stop.deadline,
@@ -173,11 +174,18 @@ async function importTelegramLoad(chatId, text) {
   const sourceMissing = rows.some((row) => !row.truck_number && !row.samsara_url);
   const omitted = stops.length - rows.length;
   let reply = `Added ${rows.length} stop${rows.length === 1 ? "" : "s"} to your TruckOn board.`;
-  if (sourceMissing) reply += " Reply with the truck number or Samsara Live Share link to attach it to these stops.";
-  reply += " Choose how often you want Telegram updates, or press Update now.";
+  if (sourceMissing) {
+    reply += " Reply with the truck number or Samsara Live Share link for these stops.";
+  } else {
+    reply += " Choose how often you want Telegram updates, or press Update now.";
+  }
   if (omitted > 0) reply += ` The board limit was reached; ${omitted} stop${omitted === 1 ? " was" : "s were"} not added.`;
   try {
-    await sendTelegramMessage(chatId, reply, { reply_markup: groupKeyboard(groupId) });
+    await sendTelegramMessage(
+      chatId,
+      reply,
+      sourceMissing ? {} : { reply_markup: groupKeyboard(groupId) }
+    );
   } catch (e) {
     console.warn("Telegram import confirmation failed:", e.message);
   }
@@ -274,7 +282,7 @@ async function handleSourceReply(chatId, text) {
   return true;
 }
 
-async function handleCallback(callback) {
+async function handleCallback(callback, origin) {
   const chatId = callback.message?.chat?.id;
   await telegramApi("answerCallbackQuery", { callback_query_id: callback.id });
   if (!chatId || callback.message?.chat?.type !== "private") return;
@@ -323,14 +331,15 @@ async function handleCallback(callback) {
     const cadence = minutes === 0
       ? "Telegram updates turned off."
       : `Telegram updates set to every ${minutes < 60 ? `${minutes} minutes` : `${minutes / 60} hour${minutes === 60 ? "" : "s"}`}.`;
-    await sendTelegramMessage(chatId, `${cadence} You can change this below or press Update now.`, { reply_markup: groupKeyboard(groupId) });
+    await sendTelegramMessage(chatId, `${cadence} Saved for ${loads.length} stop${loads.length === 1 ? "" : "s"}. You can change it below or press Update now.`, { reply_markup: groupKeyboard(groupId) });
     return;
   }
 
-  await updateGroupNow(chatId, profile.id, groupId, loads);
+  await sendTelegramMessage(chatId, "Checking these stops now. I will send the results here shortly.");
+  await updateGroupNow(chatId, profile.id, groupId, loads, origin);
 }
 
-async function updateGroupNow(chatId, userId, groupId, loads) {
+async function updateGroupNow(chatId, userId, groupId, loads, origin) {
   const eligible = loads.filter((load) => load.deadline && (load.truck_number || load.samsara_url) && load.status !== "arrived");
   if (!eligible.length) {
     await sendTelegramMessage(chatId, "Add a truck number or Samsara Live Share link first. Stops without an appointment cannot be checked.");
@@ -347,8 +356,7 @@ async function updateGroupNow(chatId, userId, groupId, loads) {
     .in("id", ids);
   if (error) throw error;
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://truckon.site";
-  const checkUrl = new URL("/api/check", appUrl);
+  const checkUrl = new URL("/api/check", origin);
   if (process.env.CHECK_SECRET) checkUrl.searchParams.set("key", process.env.CHECK_SECRET);
   checkUrl.searchParams.set("load_ids", ids.join(","));
   const response = await fetch(checkUrl, {

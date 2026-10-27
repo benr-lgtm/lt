@@ -217,6 +217,7 @@ export default function Page() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [message, setMessage] = useState("");
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -320,6 +321,7 @@ export default function Page() {
     setRows((prev) => {
       const next = prev.slice();
       const row = { ...next[i], [field]: value };
+      row.pending_delete = false;
       // The alert time mirrors the appointment until it's edited directly,
       // after which it stays pinned so an appointment change can't silently
       // move the thing the alerts actually fire on.
@@ -341,7 +343,7 @@ export default function Page() {
   function clearRow(i) {
     setRows((prev) => {
       const next = prev.slice();
-      next[i] = blankRow(next[i].position);
+      next[i] = { ...blankRow(next[i].position), pending_delete: !!next[i].id };
       return withSpare(next, maxRows);
     });
     setMessage("Row cleared — it leaves the database on the next save.");
@@ -403,6 +405,7 @@ export default function Page() {
     try {
       const payload = rows.map((r) => ({
         position: r.position,
+        load_number: r.load_number,
         name: r.name,
         kind: r.kind,
         appt_at: r.appt_at,
@@ -433,6 +436,7 @@ export default function Page() {
         if (sent.has(pos)) continue;
         payload.push({
           position: pos,
+          load_number: "",
           name: "",
           kind: "delivery",
           appt_at: "",
@@ -518,6 +522,7 @@ export default function Page() {
           next[index] = {
             ...next[index],
             name: stop.facility || (stop.kind === "pickup" ? "Pickup" : "Delivery"),
+            load_number: stop.loadNumber || "",
             kind: stop.kind,
             appt_at: stop.appointmentAt || stop.deadline || "",
             deadline: stop.deadline || stop.appointmentAt || "",
@@ -541,6 +546,26 @@ export default function Page() {
     }
   }
 
+  async function updateAllNow() {
+    setUpdating(true);
+    setMessage("Updating active loads now…");
+    try {
+      const response = await fetch("/api/loads/update", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Update could not run.");
+      await refresh();
+      setMessage(
+        result.checked
+          ? `Updated ${result.checked} load${result.checked === 1 ? "" : "s"}${result.deferred ? `; ${result.deferred} will continue in the background` : ""}.${result.telegramSent ? ` Sent Telegram update for ${result.telegramSent} stop${result.telegramSent === 1 ? "" : "s"}.` : " No updated loads have Telegram enabled."}${result.telegramError ? ` Telegram error: ${result.telegramError}` : ""}`
+          : result.message || "No active loads need an update."
+      );
+    } catch (e) {
+      setMessage(`Update failed: ${e.message}`);
+    } finally {
+      setUpdating(false);
+    }
+  }
+
   async function checkin(row, state) {
     await fetch("/api/loads/checkin", {
       method: "POST",
@@ -555,7 +580,7 @@ export default function Page() {
     window.location.href = "/login";
   }
 
-  const busy = saving || loading;
+  const busy = saving || loading || updating;
   const saveBlocked = busy || locked;
   const lowBalance = profile && profile.balance_cents < 200;
 
@@ -661,6 +686,9 @@ export default function Page() {
             <button className="btn secondary" onClick={() => setShowAiImport((value) => !value)}>
               {showAiImport ? "Close AI import" : "Paste load with AI"}
             </button>
+            <button className="btn secondary" onClick={updateAllNow} disabled={busy || updating}>
+              {updating ? "Updating…" : "Update all now"}
+            </button>
             <button className="btn secondary" onClick={clearAll} disabled={busy}>
               Clear all
             </button>
@@ -756,6 +784,7 @@ export default function Page() {
                 <th className="col-status">Status</th>
                 <th className="col-checkin">Check-in</th>
                 <th>Link or truck #</th>
+                <th className="col-load-number">Load #</th>
                 <th className="col-stop">PASTE HERE 🔽</th>
                 <th className="col-half">ALERT IF LATER THAN…</th>
                 <th className="col-mail">Email alerts</th>
@@ -779,9 +808,10 @@ export default function Page() {
                   (r.status === "unknown" ||
                     (!!r.next_check_at && new Date(r.next_check_at) <= new Date()));
                 const zone = tzAbbr(r.dest_tz, r.appt_at || r.deadline);
+                const showZone = !!zone || !!r.destination;
                 const zoneHint = zone
                   ? `Times are local to the delivery (${r.dest_tz}), not your own clock.`
-                  : "";
+                  : "The destination time zone will appear after its address is resolved.";
                 return (
                   <tr
                     key={i}
@@ -888,6 +918,15 @@ export default function Page() {
                           in reach. */}
                       {badLink ? <span className="field-error">{badLink}</span> : null}
                     </td>
+                    <td className="col-load-number">
+                      <input
+                        className="load-number-input"
+                        aria-label={`Load number for row ${i + 1}`}
+                        placeholder="Load #"
+                        value={r.load_number}
+                        onChange={(e) => update(i, "load_number", e.target.value)}
+                      />
+                    </td>
                     {/* One stop = one cell: what kind, when, which facility and
                         where. These were three columns that were always read
                         together, and splitting them meant scrolling sideways to
@@ -913,9 +952,9 @@ export default function Page() {
                             value={r.appt_at}
                             onChange={(e) => update(i, "appt_at", e.target.value)}
                           />
-                          {zone ? (
+                          {showZone ? (
                             <span className="tz-tag" title={zoneHint}>
-                              {zone}
+                              {zone || "Zone pending"}
                             </span>
                           ) : null}
                         </div>
@@ -955,9 +994,9 @@ export default function Page() {
                           value={r.deadline}
                           onChange={(e) => update(i, "deadline", e.target.value)}
                         />
-                        {zone ? (
+                        {showZone ? (
                           <span className="tz-tag" title={zoneHint}>
-                            {zone}
+                            {zone || "Zone pending"}
                           </span>
                         ) : null}
                         {r.alert_unlinked ? (
@@ -1016,7 +1055,7 @@ export default function Page() {
                   no more rows coming and an ellipsis would be a lie. */}
               {rows.length < maxRows ? (
                 <tr className="more-row">
-                  <td colSpan={14} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                  <td colSpan={15} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
                     <span className="more-dots">…</span>
                     <span className="more-text">
                       {maxRows - rows.length} more row
@@ -1026,7 +1065,7 @@ export default function Page() {
                 </tr>
               ) : (
                 <tr className="more-row">
-                  <td colSpan={14}>
+                  <td colSpan={15}>
                     <span className="more-text">
                       Row limit reached — {maxRows} of {maxRows}.
                     </span>
