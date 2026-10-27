@@ -5,7 +5,7 @@ import { ADMIN_COOKIE, verifyAdminToken } from "./lib/adminAuth";
 // Routes reachable without a signed-in user. Everything else redirects to /login.
 // There is deliberately no /signup — accounts are created from the admin panel
 // only, which removes bonus-farming as a threat entirely.
-const PUBLIC_PATHS = ["/login", "/admin/login", "/api/health"];
+const PUBLIC_PATHS = ["/login", "/admin/login", "/api/health", "/api/telegram/webhook"];
 
 function isPublic(pathname) {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
