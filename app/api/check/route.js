@@ -75,18 +75,35 @@ export async function GET(req) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  const requestedIds = url.searchParams.has("load_ids")
+    ? url.searchParams
+        .get("load_ids")
+        .split(",")
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0)
+    : null;
+  if (requestedIds && (!requestedIds.length || requestedIds.length > 100)) {
+    return Response.json({ error: "invalid load_ids" }, { status: 400 });
+  }
+
   const limit = Math.max(1, parseInt(process.env.CHECK_BATCH || "40", 10));
   const supabase = getSupabase(); // service role: the worker spans all tenants
   const nowIso = new Date().toISOString();
 
   try {
-    const { data: due, error } = await supabase
+    let query = supabase
       .from("loads")
       .select("*")
-      .not("next_check_at", "is", null)
-      .lte("next_check_at", nowIso)
-      .order("next_check_at", { ascending: true })
-      .limit(limit);
+      .not("next_check_at", "is", null);
+    if (requestedIds) {
+      query = query.in("id", requestedIds).limit(requestedIds.length);
+    } else {
+      query = query
+        .lte("next_check_at", nowIso)
+        .order("next_check_at", { ascending: true })
+        .limit(limit);
+    }
+    const { data: due, error } = await query;
     if (error) throw error;
 
     const results = [];
@@ -130,8 +147,12 @@ export async function GET(req) {
 
     // Check-in prompts are time-driven, not position-driven, so they're swept
     // separately from the ETA work.
-    const telegram = await sweepTelegramNotifications(supabase);
-    const checkins = await sweepCheckins(supabase);
+    const telegram = requestedIds
+      ? { sent: 0, failed: 0 }
+      : await sweepTelegramNotifications(supabase);
+    const checkins = requestedIds
+      ? { prompted: 0, reprompted: 0 }
+      : await sweepCheckins(supabase);
 
     // `deferred` is the number left for the next tick. A value that stays high
     // across sweeps means the batch cannot keep up — raise CHECK_BATCH, or the
