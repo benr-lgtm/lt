@@ -119,14 +119,14 @@ replace it in Vercel before reconnecting.
 ### 6. AI load import (optional)
 1. Add `GROQ_API_KEY` to Vercel Environment Variables and redeploy.
 2. On the board, choose **Paste load with AI**, paste the full dispatch message,
-   and select **Read and add stops**. Each PU/DEL is added as a separate row;
-   load numbers, references, and instructions are kept in Notes.
+   and select **Read and add stops**. Each unique PU/DEL is added as a separate
+   row; when one Load # line lists multiple IDs, only the first is used.
 3. If you send the message directly to the connected Telegram bot, its stops are
    added to your board automatically. If missing, reply to the bot with a truck
-   number or Samsara Live Share URL to attach it to those stops. The bot then
-   offers the update frequency controls and **Update now**. On the website,
-   **Update all now** refreshes every active trackable load and sends a one-time
-   report to your connected Telegram, even if recurring updates are Off.
+   number or Samsara Live Share URL to attach it to those stops. Use the bot's
+   **Update all** reply button for a one-time report. On the website, **Update
+   all now** refreshes every active trackable load and sends a one-time report
+   to your connected Telegram, even if recurring updates are Off.
 
 ### 7. Deploy to Vercel
 1. Push this folder to a GitHub repo.
