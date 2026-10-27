@@ -96,6 +96,24 @@ export default function Settings({ profile, onClose, onSaved }) {
     }
   }
 
+  async function repairTelegram() {
+    setTelegramBusy(true);
+    setTelegramMessage("");
+    try {
+      const result = await fetch("/api/telegram/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "repair" }),
+      }).then((r) => r.json());
+      if (result.error) throw new Error(result.error);
+      setTelegramMessage("Bot webhook refreshed. Return to Telegram and press Update now again.");
+    } catch (e) {
+      setTelegramMessage(e.message || "Could not refresh the Telegram webhook.");
+    } finally {
+      setTelegramBusy(false);
+    }
+  }
+
   async function disconnectTelegram() {
     setTelegramBusy(true);
     setTelegramMessage("");
@@ -316,14 +334,24 @@ export default function Settings({ profile, onClose, onSaved }) {
         <div className="modal-actions">
           <span>{telegramConnected ? "Telegram connected" : "Telegram not connected"}</span>
           {telegramConnected ? (
-            <button
-              type="button"
-              className="btn secondary"
-              onClick={disconnectTelegram}
-              disabled={telegramBusy}
-            >
-              {telegramBusy ? "Please wait…" : "Disconnect"}
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={repairTelegram}
+                disabled={telegramBusy}
+              >
+                {telegramBusy ? "Refreshing…" : "Refresh bot"}
+              </button>
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={disconnectTelegram}
+                disabled={telegramBusy}
+              >
+                {telegramBusy ? "Please wait…" : "Disconnect"}
+              </button>
+            </>
           ) : (
             <button
               type="button"

@@ -1,6 +1,10 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { getSupabase } from "../../../../lib/supabase";
-import { sendTelegramMessage, telegramWebhookSecret } from "../../../../lib/telegram";
+import {
+  configureTelegramWebhook,
+  sendTelegramMessage,
+  telegramWebhookSecret,
+} from "../../../../lib/telegram";
 import { parseLoadMessage } from "../../../../lib/groq";
 import { looksLikeShareUrl } from "../../../../lib/shareLink";
 import { MAX_ROWS } from "../../../../lib/rows";
@@ -19,12 +23,28 @@ export async function POST(req) {
   try {
     const update = await req.json();
     if (update.callback_query) {
-      await handleCallback(update.callback_query, new URL(req.url).origin);
+      try {
+        await handleCallback(update.callback_query, new URL(req.url).origin);
+      } catch (e) {
+        const chatId = update.callback_query.message?.chat?.id;
+        console.warn("Telegram button action failed:", e.message);
+        if (chatId) {
+          await sendTelegramMessage(chatId, "I couldn't complete that button action. Please press it again, or use Update all now on the website.").catch(() => {});
+        }
+      }
       return Response.json({ ok: true });
     }
     const message = update.message;
     const chatId = message?.chat?.id;
     if (!chatId || message?.chat?.type !== "private") return Response.json({ ok: true });
+    if (/^\/(?:refresh|fix)(?:@\w+)?$/i.test(String(message.text || "").trim())) {
+      const bot = await configureTelegramWebhook();
+      await sendTelegramMessage(
+        chatId,
+        `Bot webhook refreshed for ${bot.webhook?.url || "the configured TruckOn site"}. Try the buttons again.`
+      );
+      return Response.json({ ok: true });
+    }
     const match = String(message?.text || "").match(/^\/start(?:@\w+)?\s+([A-Za-z0-9_-]{20,64})/);
     if (match) return connectChat(chatId, match[1]);
 

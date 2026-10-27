@@ -35,13 +35,18 @@ export async function GET() {
   }
 }
 
-export async function POST() {
+export async function POST(req) {
   const session = await getSessionUser();
   if (!session) return unauthorized();
 
   try {
+    const body = await req.json().catch(() => ({}));
     const bot = await configureTelegramWebhook();
     if (!bot?.username) throw new Error("Telegram did not return the bot username.");
+
+    if (body.action === "repair") {
+      return Response.json({ ok: true, webhookUrl: bot.webhook?.url || "" });
+    }
 
     const token = randomBytes(32).toString("base64url");
     const tokenHash = createHash("sha256").update(token).digest("hex");
