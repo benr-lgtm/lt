@@ -84,6 +84,9 @@ export async function PUT(req) {
       const destination = trim(r.destination);
       const notes = trim(r.notes);
       const alert_unlinked = !!r.alert_unlinked;
+      const interval = Number(r.telegram_interval_minutes);
+      const telegram_interval_minutes = [0, 30, 60, 120, 180].includes(interval) ? interval : 0;
+      const telegram_enabled = telegram_interval_minutes > 0;
       // Absent means "not sent by an older client", which must not silently
       // disable alerting — only an explicit false turns it off.
       const alert_enabled = r.alert_enabled !== false;
@@ -103,6 +106,8 @@ export async function PUT(req) {
       if (linkProblem) linkErrors.push({ row: position + 1, message: linkProblem });
 
       const prev = byPos.get(position);
+      const telegramIntervalChanged =
+        !prev || Number(prev.telegram_interval_minutes || 0) !== telegram_interval_minutes;
       const empty =
         !name && !truck_number && !samsara_url && !destination && !deadline && !appt_at && !notes;
       if (empty) {
@@ -145,6 +150,8 @@ export async function PUT(req) {
         destination,
         notes,
         alert_enabled,
+        telegram_enabled,
+        telegram_interval_minutes,
         checkin_enabled,
         checkin_due_at: null,
         updated_at: new Date().toISOString(),
@@ -158,6 +165,13 @@ export async function PUT(req) {
           status: linkProblem ? "error" : "unknown",
           status_note: linkProblem,
           alerted: false,
+          telegram_pending_status: null,
+          telegram_late_notified_at: null,
+          telegram_arrived_notified_at: null,
+          telegram_last_sent_at: null,
+          telegram_next_at: telegram_enabled
+            ? new Date(Date.now() + telegram_interval_minutes * 60 * 1000).toISOString()
+            : null,
           // Editing the row is a fresh start: if the new link also dies, that
           // is worth another email.
           blackout_alerted: false,
@@ -197,6 +211,15 @@ export async function PUT(req) {
           status: prev.status ?? "unknown",
           status_note: prev.status_note ?? null,
           alerted: prev.alerted ?? false,
+          telegram_pending_status: telegram_enabled ? prev.telegram_pending_status ?? null : null,
+          telegram_late_notified_at: prev.telegram_late_notified_at ?? null,
+          telegram_arrived_notified_at: prev.telegram_arrived_notified_at ?? null,
+          telegram_last_sent_at: prev.telegram_last_sent_at ?? null,
+          telegram_next_at: telegram_enabled
+            ? telegramIntervalChanged || !prev.telegram_next_at
+              ? new Date(Date.now() + telegram_interval_minutes * 60 * 1000).toISOString()
+              : prev.telegram_next_at
+            : null,
           // Must appear in BOTH branches: PostgREST inserts the union of keys
           // across a bulk upsert and NULLs the gaps, so listing a column on
           // only one branch wipes it on every other row.
@@ -334,6 +357,11 @@ function trim(v) {
 // browser — only whether one is stored.
 function publicProfile(p) {
   if (!p) return null;
-  const { samsara_token_enc, ...rest } = p;
+  const {
+    samsara_token_enc,
+    telegram_link_token_hash,
+    telegram_link_token_created_at,
+    ...rest
+  } = p;
   return { ...rest, has_samsara_token: !!samsara_token_enc };
 }

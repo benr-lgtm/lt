@@ -19,6 +19,7 @@ import {
 import { nextCheckAt, slackMsFrom, graceMs } from "../../../lib/scheduler";
 import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
+import { sendTelegramMessage } from "../../../lib/telegram";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -129,6 +130,7 @@ export async function GET(req) {
 
     // Check-in prompts are time-driven, not position-driven, so they're swept
     // separately from the ETA work.
+    const telegram = await sweepTelegramNotifications(supabase);
     const checkins = await sweepCheckins(supabase);
 
     // `deferred` is the number left for the next tick. A value that stays high
@@ -138,6 +140,7 @@ export async function GET(req) {
       checked: results.length,
       deferred,
       elapsedMs: Date.now() - started,
+      telegram,
       checkins,
       results,
     });
@@ -279,6 +282,7 @@ async function checkOne(supabase, load, ctx) {
         charged,
         patch: {
           status: "arrived",
+          telegram_pending_status: load.telegram_enabled ? "arrived" : null,
           // Say which rule fired: "arrived" a quarter-mile from the pin looks
           // like a bug unless the row explains that the truck has been parked
           // there for twenty minutes.
@@ -437,6 +441,10 @@ async function checkOne(supabase, load, ctx) {
       eta: formatEta(etaIso, tz),
       patch: {
         status,
+        telegram_pending_status:
+          status === "late" && load.status !== "late" && load.telegram_enabled
+            ? "late"
+            : load.telegram_pending_status ?? null,
         status_note: alertNote,
         alerted,
         eta_iso: etaIso,
@@ -769,6 +777,118 @@ async function sweepCheckins(supabase) {
     reprompted: (missed || []).length,
     ...(emailErrors.length ? { emailErrors } : {}),
   };
+}
+
+// Periodic updates and status changes share one retryable send path. Scheduled
+// checks run every two minutes, so cadence updates are delivered within that
+// window of their selected time.
+async function sweepTelegramNotifications(supabase) {
+  const pending = [];
+  const { data: events, error: eventError } = await supabase
+      .from("loads")
+      .select("*")
+      .eq("telegram_enabled", true)
+      .in("telegram_pending_status", ["late", "arrived"])
+      .limit(50);
+  if (eventError) {
+    console.warn("Telegram status notification query failed:", eventError.message);
+    return { sent: 0, failed: 1 };
+  }
+  const dueAt = new Date().toISOString();
+  const { data: due, error: dueError } = await supabase
+    .from("loads")
+    .select("*")
+    .eq("telegram_enabled", true)
+    .in("status", ["on_time", "late", "error"])
+    .not("telegram_next_at", "is", null)
+    .lte("telegram_next_at", dueAt)
+    .limit(100);
+  if (dueError) {
+    console.warn("Telegram scheduled update query failed:", dueError.message);
+    return { sent: 0, failed: 1 };
+  }
+  const byId = new Map();
+  for (const load of events || []) byId.set(load.id, { load, event: true, scheduled: false });
+  for (const load of due || []) {
+    const item = byId.get(load.id) || { load, event: false, scheduled: false };
+    item.load = load.telegram_pending_status ? load : item.load;
+    item.scheduled = true;
+    byId.set(load.id, item);
+  }
+  pending.push(...byId.values());
+
+  const profiles = new Map();
+  let sent = 0;
+  let failed = 0;
+  for (const { load, event, scheduled } of pending) {
+    try {
+      let profile = profiles.get(load.user_id);
+      if (!profile) {
+        const { data } = await supabase
+          .from("profiles")
+          .select("telegram_chat_id")
+          .eq("id", load.user_id)
+          .maybeSingle();
+        profile = data || null;
+        profiles.set(load.user_id, profile);
+      }
+      if (!profile?.telegram_chat_id) continue;
+      const eventStatus = event ? load.telegram_pending_status : null;
+      const status = eventStatus || load.status;
+      await sendTelegramMessage(
+        profile.telegram_chat_id,
+        telegramLoadMessage(load, status, !event && scheduled)
+      );
+
+      const now = new Date();
+      const interval = Number(load.telegram_interval_minutes) || 0;
+      const patch = { telegram_last_sent_at: now.toISOString() };
+      if (eventStatus === "late") patch.telegram_late_notified_at = now.toISOString();
+      if (eventStatus === "arrived") {
+        patch.telegram_arrived_notified_at = now.toISOString();
+        patch.telegram_next_at = null;
+      } else if (eventStatus === "late" && interval > 0) {
+        patch.telegram_next_at = new Date(now.getTime() + interval * 60 * 1000).toISOString();
+      }
+      if (eventStatus) patch.telegram_pending_status = null;
+      if (scheduled) {
+        patch.telegram_next_at = status === "arrived" || interval <= 0
+          ? null
+          : new Date(now.getTime() + interval * 60 * 1000).toISOString();
+      }
+
+      let update = supabase.from("loads").update(patch).eq("id", load.id);
+      if (eventStatus) update = update.eq("telegram_pending_status", eventStatus);
+      const { error } = await update;
+      if (error) throw error;
+      sent++;
+    } catch (e) {
+      failed++;
+      console.warn(`Telegram notification failed for load ${load.id}:`, e.message);
+    }
+  }
+  return { sent, failed };
+}
+
+function telegramLoadMessage(load, status, periodic = false) {
+  const title = load.name || `Load ${Number(load.position) + 1}`;
+  const lines = [
+    periodic
+      ? "TruckOn.site: Load update"
+      : status === "late"
+      ? "TruckOn.site: Load is late"
+      : "TruckOn.site: Load arrived",
+    title,
+    `Status: ${status === "on_time" ? "On time" : status === "late" ? "Late" : status === "arrived" ? "Arrived" : "Tracking issue"}`,
+    load.truck_number ? `Truck: ${load.truck_number}` : null,
+    load.destination ? `Destination: ${load.destination}` : null,
+    load.eta_display ? `ETA: ${load.eta_display}` : null,
+    load.truck_at ? `Last location: ${load.truck_at}` : null,
+    typeof load.miles_left === "number" ? `Miles left: ${Math.round(load.miles_left)}` : null,
+    load.notes ? `Notes: ${load.notes}` : null,
+    load.status_note ? `Details: ${load.status_note}` : null,
+  ].filter(Boolean);
+  return lines.join("\n").slice(0, 4000);
 }
 
 function groupBy(list, fn) {

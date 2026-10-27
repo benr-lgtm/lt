@@ -220,6 +220,9 @@ export default function Page() {
   const [message, setMessage] = useState("");
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAiImport, setShowAiImport] = useState(false);
+  const [aiText, setAiText] = useState("");
+  const [aiParsing, setAiParsing] = useState(false);
   // Positions the server currently has rows for. The on-screen table is not a
   // reliable record of this: it shrinks as it empties, so it can forget rows
   // that still exist in the database.
@@ -409,6 +412,8 @@ export default function Page() {
         destination: r.destination,
         notes: r.notes,
         alert_enabled: r.alert_enabled,
+        telegram_enabled: r.telegram_interval_minutes > 0,
+        telegram_interval_minutes: r.telegram_interval_minutes,
         checkin_enabled: r.checkin_enabled,
       }));
 
@@ -437,6 +442,8 @@ export default function Page() {
           destination: "",
           notes: "",
           alert_enabled: true,
+          telegram_enabled: false,
+          telegram_interval_minutes: 0,
           checkin_enabled: false,
         });
       }
@@ -477,6 +484,60 @@ export default function Page() {
       setMessage("Save failed: " + e.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function importWithAi() {
+    if (!aiText.trim()) return setMessage("Paste the load information first.");
+    setAiParsing(true);
+    setMessage("Reading load details with AI…");
+    try {
+      const response = await fetch("/api/loads/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: aiText }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not read the load information.");
+
+      const available = Math.max(0, maxRows - rows.filter((row) => !rowEmpty(row)).length);
+      const stops = (result.stops || []).slice(0, available);
+      if (!stops.length) {
+        throw new Error(result.stops?.length ? "Your board has reached its row limit." : "No usable pickup or delivery stops were found.");
+      }
+
+      setRows((current) => {
+        const next = current.slice();
+        for (const stop of stops) {
+          let index = next.findIndex(rowEmpty);
+          if (index < 0) {
+            index = next.length;
+            next.push(blankRow(index));
+          }
+          const source = stop.samsaraUrl || stop.truckNumber || "";
+          next[index] = {
+            ...next[index],
+            name: stop.facility || (stop.kind === "pickup" ? "Pickup" : "Delivery"),
+            kind: stop.kind,
+            appt_at: stop.appointmentAt || stop.deadline || "",
+            deadline: stop.deadline || stop.appointmentAt || "",
+            alert_unlinked: false,
+            source,
+            destination: stop.destination || "",
+            notes: stop.notes || "",
+          };
+        }
+        return withSpare(next, maxRows);
+      });
+      setMessage(
+        `Added ${stops.length} stop${stops.length === 1 ? "" : "s"} to the board. Add a truck number or Live Share link if missing, then choose Telegram updates and Save & Check.`
+      );
+      setAiText("");
+      setShowAiImport(false);
+    } catch (e) {
+      setMessage(`AI import failed: ${e.message}`);
+    } finally {
+      setAiParsing(false);
     }
   }
 
@@ -597,6 +658,9 @@ export default function Page() {
             <button className="btn ghost pale" onClick={() => setShowHelp((v) => !v)}>
               {showHelp ? "Instructions ▲" : "Instructions ▼"}
             </button>
+            <button className="btn secondary" onClick={() => setShowAiImport((value) => !value)}>
+              {showAiImport ? "Close AI import" : "Paste load with AI"}
+            </button>
             <button className="btn secondary" onClick={clearAll} disabled={busy}>
               Clear all
             </button>
@@ -605,6 +669,27 @@ export default function Page() {
             </button>
           </div>
         </div>
+
+        {showAiImport ? (
+          <div className="ai-import">
+            <textarea
+              className="ai-import-input"
+              aria-label="Paste full load information"
+              placeholder="Paste the complete load message here, including PU and DEL details…"
+              value={aiText}
+              onChange={(e) => setAiText(e.target.value)}
+              rows={7}
+            />
+            <div className="ai-import-actions">
+              <span className="field-hint">
+                AI will add each pickup and delivery as a board row. Missing truck numbers or Live Share links must be added before tracking can start.
+              </span>
+              <button className="btn" onClick={importWithAi} disabled={aiParsing || busy}>
+                {aiParsing ? "Reading…" : "Read and add stops"}
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {showHelp ? <Instructions /> : null}
 
@@ -674,6 +759,7 @@ export default function Page() {
                 <th className="col-stop">PASTE HERE 🔽</th>
                 <th className="col-half">ALERT IF LATER THAN…</th>
                 <th className="col-mail">Email alerts</th>
+                <th className="col-mail">Telegram updates</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -899,6 +985,21 @@ export default function Page() {
                         onChange={(v) => update(i, "checkin_enabled", v)}
                       />
                     </td>
+                    <td className="col-mail">
+                      <select
+                        className="telegram-select"
+                        aria-label={`Telegram update frequency for load ${i + 1}`}
+                        title="Send this load's status and location to Telegram at this interval"
+                        value={r.telegram_interval_minutes}
+                        onChange={(e) => update(i, "telegram_interval_minutes", Number(e.target.value))}
+                      >
+                        <option value={0}>Off</option>
+                        <option value={30}>30 min</option>
+                        <option value={60}>1 hour</option>
+                        <option value={120}>2 hours</option>
+                        <option value={180}>3 hours</option>
+                      </select>
+                    </td>
                     <td>
                       <input
                         className="notes-input"
@@ -915,7 +1016,7 @@ export default function Page() {
                   no more rows coming and an ellipsis would be a lie. */}
               {rows.length < maxRows ? (
                 <tr className="more-row">
-                  <td colSpan={13} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                  <td colSpan={14} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
                     <span className="more-dots">…</span>
                     <span className="more-text">
                       {maxRows - rows.length} more row
@@ -925,7 +1026,7 @@ export default function Page() {
                 </tr>
               ) : (
                 <tr className="more-row">
-                  <td colSpan={13}>
+                  <td colSpan={14}>
                     <span className="more-text">
                       Row limit reached — {maxRows} of {maxRows}.
                     </span>

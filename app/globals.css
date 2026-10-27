@@ -253,6 +253,25 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .toolbar .status-line { font-size: 13px; color: var(--muted); }
 .toolbar-actions { display: flex; gap: 8px; }
 
+.ai-import {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+}
+.ai-import-input { width: 100%; min-height: 150px; resize: vertical; font-family: inherit; }
+.ai-import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.ai-import-actions .field-hint { max-width: 720px; margin: 0; }
+@media (max-width: 640px) {
+  .ai-import-actions { align-items: stretch; flex-direction: column; }
+}
+
 .paste-result { margin: 0; padding: 12px 18px; font-size: 13px; color: var(--green); background: var(--green-bg); border-bottom: 1px solid var(--line); }
 .paste-result.err { color: var(--red); background: var(--red-bg); }
 

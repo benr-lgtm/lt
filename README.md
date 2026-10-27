@@ -95,7 +95,37 @@ Google bills per request after its free credit.)*
 
 Alert recipients are configured per account in **Settings**, not by an env var.
 
-### 5. Deploy to Vercel
+### 5. Telegram (optional)
+1. Create a bot with [@BotFather](https://t.me/BotFather) and add its token as
+   `TELEGRAM_BOT_TOKEN` in Vercel Environment Variables.
+2. Keep the token server-side; the webhook verification secret is derived from
+   it automatically. `TELEGRAM_WEBHOOK_SECRET` is an optional override.
+3. Ensure `NEXT_PUBLIC_APP_URL` is the deployed HTTPS app URL (it defaults to
+   `https://truckon.site`), then redeploy.
+4. In Supabase SQL Editor, run [`supabase-telegram-migration.sql`](./supabase-telegram-migration.sql).
+5. In TruckOn **Settings**, choose **Connect Telegram**, open the generated bot
+   link, and press **Start**. Then choose a Telegram update frequency for each
+   load: **Off**, **30 min**, **1 hour**, **2 hours**, or **3 hours**. Updates
+   include the load status, truck, destination, ETA, last location, miles left,
+   and notes. Late and arrival changes also send an immediate notification.
+
+The app registers the Telegram webhook when you create the connection link. The
+link expires after 15 minutes and can only be used once. The existing checker
+runs every two minutes, so scheduled updates may arrive up to two minutes after
+their selected interval. If the bot token shown
+in a local environment file or chat is exposed, revoke it with BotFather and
+replace it in Vercel before reconnecting.
+
+### 6. AI load import (optional)
+1. Add `GROQ_API_KEY` to Vercel Environment Variables and redeploy.
+2. On the board, choose **Paste load with AI**, paste the full dispatch message,
+   and select **Read and add stops**. Each PU/DEL is added as a separate row;
+   load numbers, references, and instructions are kept in Notes.
+3. If you send the message directly to the connected Telegram bot, its stops are
+   added to your board automatically. Add a truck number or Samsara Live Share
+   URL if the message did not include one; tracking cannot start without it.
+
+### 7. Deploy to Vercel
 1. Push this folder to a GitHub repo.
 2. [vercel.com](https://vercel.com) → **Add New → Project** → import the repo.
 3. Add every variable from [`.env.example`](./.env.example) under **Environment
@@ -112,6 +142,12 @@ Alert recipients are configured per account in **Settings**, not by an env var.
    | `GOOGLE_MAPS_KEY` | optional — last-resort geocoder for messy addresses |
    | `RESEND_API_KEY` | Resend API key |
    | `RESEND_FROM` | `TruckOn <alerts@truckon.site>` (verified domain) |
+   | `TELEGRAM_BOT_TOKEN` | optional — Telegram bot token, server-only |
+   | `TELEGRAM_WEBHOOK_SECRET` | optional — random secret, 32+ characters |
+   | `GROQ_API_KEY` | optional — Groq API key for AI load import |
+   | `GROQ_MODEL` | optional — defaults to `openai/gpt-oss-20b` |
+   | `GROQ_MODEL` | optional — defaults to `openai/gpt-oss-20b` |
+   | `NEXT_PUBLIC_APP_URL` | public HTTPS URL for the deployed app |
    | `ENCRYPTION_KEY` | 64 hex chars — encrypts per-user Samsara tokens |
    | `CHECK_SECRET` | any long random string; the cron must send `?key=` this |
    | `ADMIN_PASSWORD` / `ADMIN_SECRET` | guard the hidden `/admin` panel |
@@ -124,7 +160,7 @@ Alert recipients are configured per account in **Settings**, not by an env var.
 > `CHECK_BATCH` (default 40) caps how many rows one sweep touches, which keeps
 > each invocation inside the function time limit.
 
-### 6. The scheduler (Supabase pg_cron)
+### 8. The scheduler (Supabase pg_cron)
 
 The checker is driven from **inside Postgres**, not by an external pinger.
 `cron.job` runs `public.run_due_checks()` every 2 minutes, which reads
@@ -146,7 +182,7 @@ tight is checked every 5 minutes.
 > `CHECK_SECRET` in the query string, and a second caller would double the sweep
 > rate — the one thing that actually consumes routing quota.
 
-### 7. Uptime monitoring (optional, recommended)
+### 9. Uptime monitoring (optional, recommended)
 
 You do **not** need an external pinger to keep the app awake. Vercel functions
 are invoked on demand and never idle out, and the 2-minute cron keeps the

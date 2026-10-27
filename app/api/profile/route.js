@@ -100,7 +100,12 @@ export async function PUT(req) {
 // Never return the ciphertext itself — only whether one is set.
 function publicProfile(p) {
   if (!p) return null;
-  const { samsara_token_enc, ...rest } = p;
+  const {
+    samsara_token_enc,
+    telegram_link_token_hash,
+    telegram_link_token_created_at,
+    ...rest
+  } = p;
   return { ...rest, has_samsara_token: !!samsara_token_enc };
 }
 

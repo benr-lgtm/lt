@@ -2,7 +2,9 @@ node_modules/
 .next/
 .env
 .env*.local
+.env.txt
 .vercel
+supabase/.temp/
 .DS_Store
 npm-debug.log*
 
