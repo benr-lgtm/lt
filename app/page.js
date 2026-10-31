@@ -18,7 +18,7 @@ import {
   applyServerFields,
   applySavedRows,
 } from "../lib/rows";
-import { shareLinkProblem } from "../lib/shareLink";
+import { parseMotiveUrl, shareLinkProblem } from "../lib/shareLink";
 import { appointmentHasPassed } from "../lib/dispatchTime";
 
 // "America/Chicago" -> "CDT". Null until the destination has been geocoded,
@@ -242,6 +242,9 @@ export default function Page() {
   const saveAgain = useRef(false);
   const saveTimer = useRef(null);
   const suppressAutosave = useRef(false);
+  const motiveChecksInFlight = useRef(false);
+  const motiveChecksStarted = useRef(new Set());
+  const motiveCheckQueue = useRef(new Map());
   const [editVersion, setEditVersion] = useState(0);
 
   // Declared before refresh() so every row-building call site can be given the
@@ -327,6 +330,55 @@ export default function Page() {
       next[i] = { ...next[i], alert_unlinked: false, deadline: next[i].appt_at };
       return next;
     });
+  }
+
+  async function checkNewMotiveLinks(savedLoads) {
+    for (const load of savedLoads || []) {
+      if (!parseMotiveUrl(load.samsara_url) || !load.id || !load.deadline) continue;
+      const key = `${load.id}:${load.samsara_url}`;
+      if (motiveChecksStarted.current.has(key)) continue;
+      motiveChecksStarted.current.add(key);
+      motiveCheckQueue.current.set(key, load);
+    }
+    if (motiveChecksInFlight.current || !motiveCheckQueue.current.size) return;
+
+    motiveChecksInFlight.current = true;
+    setUpdating(true);
+    try {
+      while (motiveCheckQueue.current.size) {
+        const batch = [...motiveCheckQueue.current.values()];
+        motiveCheckQueue.current.clear();
+        setMessage(`Checking ${batch.length} Motive link${batch.length === 1 ? "" : "s"} now…`);
+        const response = await fetch("/api/loads/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ load_ids: batch.map((load) => load.id) }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Motive check could not run.");
+        await refresh();
+        const errors = (result.results || []).filter((item) => item.status === "error");
+        if (errors.length) {
+          const detail = errors.map((item) => item.error).filter(Boolean).join("; ");
+          setMessage(`Motive check failed${detail ? `: ${detail}` : ". Check the row status for details."}`);
+        } else if (result.checked) {
+          setMessage(
+            `Motive link${batch.length === 1 ? "" : "s"} checked. ` +
+              (batch.some((load) => load.tracking_enabled)
+                ? "Scheduled Track is on."
+                : "Turn on Track to keep checking automatically.")
+          );
+        } else {
+          setMessage("Motive check did not run. Use Update all now and check the row status.");
+        }
+      }
+    } catch (error) {
+      setMessage(`Motive check failed: ${error.message}`);
+    } finally {
+      motiveChecksInFlight.current = false;
+      setUpdating(false);
+      if (motiveCheckQueue.current.size) void checkNewMotiveLinks([]);
+    }
   }
 
   function setTracking(i, enabled) {
@@ -463,6 +515,7 @@ export default function Page() {
 
         if (res.loads) {
           setRows((current) => applySavedRows(current, res.loads, payload));
+          void checkNewMotiveLinks(res.loads);
         }
         if (res.profile) setProfile(res.profile);
         const changedDuringSave = version !== editVersionRef.current || saveAgain.current;
@@ -890,7 +943,9 @@ export default function Page() {
                     <td className="col-motion">
                       {r.motion ? (
                         <span
-                          className={`motion-value ${motionStale(r.motion_updated_at) ? "stale" : ""}`}
+                          className={`motion-value ${
+                            r.motion === "Stopped" ? "stopped" : ""
+                          } ${motionStale(r.motion_updated_at) ? "stale" : ""}`}
                           title={
                             r.motion_updated_at
                               ? `Last motion reading ${new Date(r.motion_updated_at).toLocaleString()}`

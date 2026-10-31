@@ -691,7 +691,9 @@ input:disabled { background: var(--disabled-bg); color: var(--disabled-ink); cur
 .switch-control input:checked + .switch-slider::before { transform: translateX(16px); }
 .switch-control input:focus-visible + .switch-slider { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .motion-value { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.motion-value.stopped { color: var(--red); }
 .motion-value.stale { color: var(--muted); font-weight: 400; }
+.motion-value.stopped.stale { color: var(--red); opacity: 0.62; }
 .col-motion { width: 92px; min-width: 88px; }
 .mail-toggle-word {
   border: 0;

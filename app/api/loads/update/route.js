@@ -11,11 +11,23 @@ export async function POST(req) {
 
   try {
     const { supabase, user } = session;
-    const { data: loads, error } = await supabase
+    const body = await req.json().catch(() => ({}));
+    const requestedIds = Array.isArray(body.load_ids)
+      ? body.load_ids
+          .map((id) => Number(id))
+          .filter((id) => Number.isSafeInteger(id) && id > 0)
+      : null;
+    if (requestedIds && (!requestedIds.length || requestedIds.length > 100)) {
+      return Response.json({ error: "Invalid load_ids." }, { status: 400 });
+    }
+
+    let loadsQuery = supabase
       .from("loads")
       .select("id,position,name,load_number,status,eta_display,truck_at,miles_left,truck_number,samsara_url,deadline")
       .eq("user_id", user.id)
       .is("deleted_at", null);
+    if (requestedIds) loadsQuery = loadsQuery.in("id", requestedIds);
+    const { data: loads, error } = await loadsQuery;
     if (error) throw error;
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
@@ -109,7 +121,7 @@ export async function POST(req) {
     }
     return Response.json({
       checked: result.checked || 0,
-      deferred: result.deferred || 0,
+      results: result.results || [],
       telegramSent,
       telegramError,
       deferred: deferredIds.length,
