@@ -313,8 +313,7 @@ thead th {
    check-in buttons appear and disappear — so rows visibly jump and whatever you
    were about to click has moved. A fixed height makes vertical position stable
    regardless of content. */
-/* Tall enough for the four-line paste cell: kind+time, facility, and a
-   two-line address. Every other cell is vertically centred against it. */
+/* Keep collapsed rows compact; an expanded stop-info form can grow naturally. */
 tbody tr { height: 132px; }
 tbody td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
 tbody tr:last-child td { border-bottom: none; }
@@ -345,8 +344,8 @@ tbody tr:hover { background: var(--panel-3); }
 .col-load-number { width: 190px; min-width: 170px; }
 .load-number-input { width: 100%; min-width: 155px; }
 /* ---------- merged paste cell (kind + time + facility + address) ---------- */
-.col-stop { width: 330px; }
-.stop-cell { display: flex; flex-direction: column; gap: 5px; min-width: 310px; }
+.col-stop { width: 165px; min-width: 155px; }
+.stop-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 /* Sits between the time and the address, matching the order of a pasted load
    block. Same compact metrics as its neighbours so the stack reads as one
    control rather than three borrowed ones. */
@@ -355,11 +354,11 @@ tbody tr:hover { background: var(--panel-3); }
   padding: 7px 10px;
   font-size: 13px;
 }
-.stop-when { display: flex; gap: 6px; align-items: center; }
-.stop-when input[type="datetime-local"] { flex: 1; min-width: 0; padding: 7px 8px; font-size: 13px; }
+.stop-when { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.stop-when input[type="datetime-local"] { width: 100%; min-width: 0; padding: 7px 6px; font-size: 12px; }
 /* Narrower here than the standalone .kind-select: it only ever reads DEL or
    PU, and the datetime beside it needs the room. */
-.stop-when .kind-select { width: 68px; padding: 7px 6px; font-size: 13px; }
+.stop-when .kind-select { width: 100%; padding: 7px 6px; font-size: 13px; }
 .alert-deadline { display: flex; flex-direction: column; gap: 3px; }
 .alert-deadline > span {
   color: var(--muted);
@@ -367,26 +366,28 @@ tbody tr:hover { background: var(--panel-3); }
   font-weight: 700;
   letter-spacing: 0.06em;
 }
-.alert-cell { display: flex; align-items: center; gap: 5px; }
+.alert-cell { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
 .alert-cell input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 12px; padding: 7px 6px; }
 .stop-full-info { font-size: 12px; }
 .stop-full-info summary {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  min-height: 36px;
+  min-height: 44px;
+  max-width: 100%;
   width: fit-content;
-  padding: 5px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   color: var(--ink-2);
   cursor: pointer;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
 }
 .stop-full-info summary::marker { font-size: 11px; }
 .stop-full-info summary:hover { background: var(--panel-2); color: var(--ink); }
 .stop-full-info[open] { display: flex; flex-direction: column; gap: 8px; }
-.stop-full-fields { display: flex; flex-direction: column; gap: 7px; min-width: 310px; }
+.stop-full-fields { display: flex; flex-direction: column; gap: 7px; min-width: 0; width: 100%; }
 .stop-time-warning { color: var(--red); font-size: 12px; font-weight: 600; }
 
 /* A textarea rather than an input: a full street address is routinely two
@@ -395,7 +396,7 @@ tbody tr:hover { background: var(--panel-3); }
    fixed-height rule above. */
 .dest-input {
   width: 100%;
-  min-width: 190px;
+  min-width: 0;
   resize: none;
   line-height: 1.3;
   padding: 6px 10px;
@@ -978,13 +979,16 @@ input:disabled { background: var(--disabled-bg); color: var(--disabled-ink); cur
 /* ---------- working state ---------- */
 /* Without a visible "we're on it", users assume Save failed and press it again. */
 .paste-result.working {
-  color: var(--working-ink); background: var(--working-bg); display: flex; align-items: center; gap: 10px;
+  color: var(--working-ink); background: var(--working-bg); display: flex; align-items: center; gap: 16px;
+  min-height: 74px; padding: 16px 20px; font-size: 15px; line-height: 1.45;
 }
 .spinner {
   width: 14px; height: 14px; flex-shrink: 0;
   border: 2px solid var(--spinner-track); border-top-color: var(--blue);
   border-radius: 50%; animation: spin 0.8s linear infinite;
 }
+.spinner.large { width: 42px; height: 42px; border-width: 5px; }
+.spinner.tiny { width: 20px; height: 20px; border-width: 3px; margin: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- modal (settings) ---------- */

@@ -19,6 +19,7 @@ import {
   applySavedRows,
 } from "../lib/rows";
 import { shareLinkProblem } from "../lib/shareLink";
+import { appointmentHasPassed } from "../lib/dispatchTime";
 
 // "America/Chicago" -> "CDT". Null until the destination has been geocoded,
 // since the zone is derived from its coordinates.
@@ -261,15 +262,17 @@ export default function Page() {
 
   const checking = useMemo(
     () =>
+      updating ||
       rows.some(
         (r) =>
           r.tracking_enabled &&
           r.id &&
           r.source &&
           r.deadline &&
-          r.status === "unknown"
+          (r.status === "unknown" ||
+            (!!r.next_check_at && new Date(r.next_check_at) <= new Date()))
       ),
-    [rows]
+    [rows, updating]
   );
 
   useEffect(() => {
@@ -329,7 +332,7 @@ export default function Page() {
   function setTracking(i, enabled) {
     const row = latestRows.current[i];
     if (enabled && (!row?.appt_at || !row?.deadline)) {
-      setMessage("Enter the appointment date and time in Full info before turning on Track.");
+      setMessage("Enter the appointment date and time in Stop info before turning on Track.");
       return;
     }
     markDirty();
@@ -381,6 +384,14 @@ export default function Page() {
       );
       return;
     }
+    const futureStops = parsed.filter(
+      (stop) => !appointmentHasPassed({ appointmentAt: stop.deadline, destination: stop.destination })
+    );
+    const skippedPast = parsed.length - futureStops.length;
+    if (!futureStops.length) {
+      setMessage("All pickup/delivery appointment times in that dispatch have already passed, so no stops were added.");
+      return;
+    }
     markDirty();
     setRows((prev) => {
       const next = prev.slice();
@@ -396,17 +407,18 @@ export default function Page() {
           destination: p.destination || "",
         };
       };
-      fill(i, parsed[pi++]);
+      fill(i, futureStops[pi++]);
       let j = i + 1;
-      while (pi < parsed.length) {
+      while (pi < futureStops.length) {
         while (j < next.length && !rowEmpty(next[j])) j++;
         if (j >= next.length) next.push(blankRow(next.length));
-        fill(j, parsed[pi++]);
+        fill(j, futureStops[pi++]);
         j++;
       }
       return withSpare(next, maxRows);
     });
-    let msg = `Added ${parsed.length} stop${parsed.length === 1 ? "" : "s"}. Add the truck # or a Samsara/Motive share link.`;
+    let msg = `Added ${futureStops.length} stop${futureStops.length === 1 ? "" : "s"}. Add the truck # or a Samsara/Motive share link.`;
+    if (skippedPast) msg += ` Skipped ${skippedPast} stop${skippedPast === 1 ? "" : "s"} with appointment times that had passed.`;
     setMessage(msg);
   }
 
@@ -510,8 +522,15 @@ export default function Page() {
           `Appointment date and time are missing for ${missingTime.length} stop${missingTime.length === 1 ? "" : "s"}. Add a time to each pickup and delivery, then try again.`
         );
       }
+      const futureStops = (result.stops || []).filter(
+        (stop) => !appointmentHasPassed(stop)
+      );
+      const skippedPast = (result.stops || []).length - futureStops.length;
+      if (!futureStops.length) {
+        throw new Error("All pickup/delivery appointment times in that dispatch have already passed, so no stops were added.");
+      }
       const available = Math.max(0, maxRows - rows.filter((row) => !rowEmpty(row)).length);
-      const stops = (result.stops || []).slice(0, available);
+      const stops = futureStops.slice(0, available);
       if (!stops.length) {
         throw new Error(result.stops?.length ? "Your board has reached its row limit." : "No usable pickup or delivery stops were found.");
       }
@@ -541,9 +560,9 @@ export default function Page() {
         return withSpare(next, maxRows);
       });
       markDirty();
-      setMessage(
-        `Added ${stops.length} stop${stops.length === 1 ? "" : "s"} to the board. Add a truck number or a Samsara/Motive share link if missing, then turn on Track when ready.`
-      );
+      let importMessage = `Added ${stops.length} stop${stops.length === 1 ? "" : "s"} to the board. Add a truck number or a Samsara/Motive share link if missing, then turn on Track when ready.`;
+      if (skippedPast) importMessage += ` Skipped ${skippedPast} stop${skippedPast === 1 ? "" : "s"} with appointment times that had passed.`;
+      setMessage(importMessage);
       setAiText("");
       setShowAiImport(false);
     } catch (e) {
@@ -723,8 +742,8 @@ export default function Page() {
             users assume the save failed and hammer the button. Only shown for
             rows that have actually been saved — see `checking`. */}
         {checking ? (
-          <p className="paste-result working">
-            <span className="spinner" />
+          <p className="paste-result working" role="status" aria-live="polite">
+            <span className="spinner large" aria-hidden="true" />
             Working on it — finding your trucks and calculating ETAs. This can take
             a minute or two, and updates appear on their own. Keep filling in rows
             if you like; nothing you type will be lost.
@@ -954,7 +973,7 @@ export default function Page() {
                       <div className="stop-cell">
                         <details className="stop-full-info">
                           <summary>
-                            Full info
+                            Stop info
                             {r.source && !r.appt_at ? (
                               <span className="stop-time-warning"> · appointment time required</span>
                             ) : null}
@@ -1014,7 +1033,7 @@ export default function Page() {
                             />
                             <textarea
                               className="dest-input"
-                              rows={2}
+                              rows={3}
                               placeholder="Address / full stop details"
                               value={r.destination}
                               onChange={(e) =>

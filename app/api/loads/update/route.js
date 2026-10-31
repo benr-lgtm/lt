@@ -32,7 +32,7 @@ export async function POST(req) {
         .map((load) => load.load_number ? `#${load.load_number}` : `row ${load.position + 1}`)
         .join(", ");
       return Response.json(
-        { error: `Appointment date and time required for ${labels}. Open Full info and enter both before updating.` },
+        { error: `Appointment date and time required for ${labels}. Open Stop info and enter both before updating.` },
         { status: 400 }
       );
     }

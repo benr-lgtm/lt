@@ -10,7 +10,7 @@ export default function Instructions() {
   return (
     <div className="instructions">
       <p className="instructions-lead">
-        Enter the stop type and appointment in the board. Open <b>Full info</b>{" "}
+        Enter the stop type and appointment in the board. Open <b>Stop info</b>{" "}
         for the facility and address, or paste dispatch notes there to fill
         <b> several rows at once</b>. Add a truck # or Samsara/Motive share link.
         Changes save automatically; turn on <b>Track</b> for scheduled checks
