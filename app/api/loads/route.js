@@ -299,10 +299,16 @@ export async function PUT(req) {
         });
         if (error) throw error;
       }
-      const { error: updateError } = await supabase
-        .from("loads")
-        .upsert(updates, { onConflict: "id" });
-      if (updateError) throw updateError;
+      for (const row of updates) {
+        const { id, ...values } = row;
+        const { error: updateError } = await supabase
+          .from("loads")
+          .update(values)
+          .eq("id", id)
+          .eq("user_id", user.id)
+          .is("deleted_at", null);
+        if (updateError) throw updateError;
+      }
     }
     if (inserts.length) {
       const { error } = await supabase.from("loads").insert(inserts);

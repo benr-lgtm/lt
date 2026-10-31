@@ -24,6 +24,19 @@ export async function POST(req) {
       .maybeSingle();
     if (profileError) throw profileError;
 
+    const missingTime = (loads || []).filter(
+      (load) => load.status !== "arrived" && (load.truck_number || load.samsara_url) && !load.deadline
+    );
+    if (missingTime.length) {
+      const labels = missingTime
+        .map((load) => load.load_number ? `#${load.load_number}` : `row ${load.position + 1}`)
+        .join(", ");
+      return Response.json(
+        { error: `Appointment date and time required for ${labels}. Open Full info and enter both before updating.` },
+        { status: 400 }
+      );
+    }
+
     const eligible = (loads || []).filter(
       (load) => load.status !== "arrived" && load.deadline && (load.truck_number || load.samsara_url)
     );
@@ -58,7 +71,9 @@ export async function POST(req) {
     }
     let telegramSent = 0;
     let telegramError = null;
-    const updated = (loads || []).filter((load) => ids.includes(Number(load.id)));
+    const completedIds = new Set((result.results || []).map((item) => Number(item.id)));
+    const deferredIds = ids.filter((id) => !completedIds.has(id));
+    const updated = (loads || []).filter((load) => completedIds.has(Number(load.id)));
     if (!profile?.telegram_chat_id) {
       telegramError = "Connect Telegram in Settings to receive this update.";
     } else if (updated.length) {
@@ -97,6 +112,7 @@ export async function POST(req) {
       deferred: result.deferred || 0,
       telegramSent,
       telegramError,
+      deferred: deferredIds.length,
     });
   } catch (e) {
     return Response.json({ error: e.message || "Could not update loads now." }, { status: 500 });

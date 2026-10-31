@@ -327,6 +327,11 @@ export default function Page() {
   }
 
   function setTracking(i, enabled) {
+    const row = latestRows.current[i];
+    if (enabled && (!row?.appt_at || !row?.deadline)) {
+      setMessage("Enter the appointment date and time in Full info before turning on Track.");
+      return;
+    }
     markDirty();
     setRows((prev) => {
       const next = prev.slice();
@@ -369,8 +374,14 @@ export default function Page() {
     const parsed = parseLoads(text);
     if (!parsed.length) return;
     e.preventDefault();
+    const missingTime = parsed.filter((stop) => !stop.deadline);
+    if (missingTime.length) {
+      setMessage(
+        `Appointment time missing for ${missingTime.length} stop${missingTime.length === 1 ? "" : "s"}. Enter a date and time in the dispatch text, then paste again.`
+      );
+      return;
+    }
     markDirty();
-    let assumed = 0;
     setRows((prev) => {
       const next = prev.slice();
       let pi = 0;
@@ -384,7 +395,6 @@ export default function Page() {
           alert_unlinked: false,
           destination: p.destination || "",
         };
-        if (p.timeAssumed) assumed++;
       };
       fill(i, parsed[pi++]);
       let j = i + 1;
@@ -397,7 +407,6 @@ export default function Page() {
       return withSpare(next, maxRows);
     });
     let msg = `Added ${parsed.length} stop${parsed.length === 1 ? "" : "s"}. Add the truck # or a Samsara/Motive share link.`;
-    if (assumed) msg += ` ${assumed} had no time — set to 23:59; adjust if needed.`;
     setMessage(msg);
   }
 
@@ -493,6 +502,14 @@ export default function Page() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Could not read the load information.");
 
+      const missingTime = (result.stops || []).filter(
+        (stop) => !stop.appointmentAt && !stop.deadline
+      );
+      if (missingTime.length) {
+        throw new Error(
+          `Appointment date and time are missing for ${missingTime.length} stop${missingTime.length === 1 ? "" : "s"}. Add a time to each pickup and delivery, then try again.`
+        );
+      }
       const available = Math.max(0, maxRows - rows.filter((row) => !rowEmpty(row)).length);
       const stops = (result.stops || []).slice(0, available);
       if (!stops.length) {
@@ -546,7 +563,7 @@ export default function Page() {
       await refresh();
       setMessage(
         result.checked
-          ? `Updated ${result.checked} load${result.checked === 1 ? "" : "s"}${result.deferred ? `; ${result.deferred} will continue in the background` : ""}.${result.telegramSent ? ` Sent Telegram update for ${result.telegramSent} stop${result.telegramSent === 1 ? "" : "s"}.` : " No updated loads have Telegram enabled."}${result.telegramError ? ` Telegram error: ${result.telegramError}` : ""}`
+          ? `Updated ${result.checked} load${result.checked === 1 ? "" : "s"}${result.deferred ? `; ${result.deferred} will continue in the background` : ""}.${result.telegramSent ? ` Sent Telegram report for ${result.telegramSent} stop${result.telegramSent === 1 ? "" : "s"}.` : " No Telegram report was sent."}${result.telegramError ? ` Telegram error: ${result.telegramError}` : ""}`
           : result.message || "No active loads need an update."
       );
     } catch (e) {
@@ -935,73 +952,80 @@ export default function Page() {
                         readable instead of being clipped to one line. */}
                     <td className="col-stop">
                       <div className="stop-cell">
-                        <div className="stop-when">
-                          <select
-                            className="kind-select"
-                            value={r.kind}
-                            onChange={(e) => update(i, "kind", e.target.value)}
-                          >
-                            <option value="delivery">DEL</option>
-                            <option value="pickup">PU</option>
-                          </select>
-                          <input
-                            className="small"
-                            type="datetime-local"
-                            value={r.appt_at}
-                            onChange={(e) => update(i, "appt_at", e.target.value)}
-                          />
-                          {showZone ? (
-                            <span className="tz-tag" title={zoneHint}>
-                              {zone || "Zone pending"}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="alert-deadline">
-                          <span>ALERT IF</span>
-                          <div className="alert-cell">
-                            <input
-                              className="small"
-                              type="datetime-local"
-                              value={r.deadline}
-                              onChange={(e) => update(i, "deadline", e.target.value)}
-                            />
-                            {showZone ? (
-                              <span className="tz-tag" title={zoneHint}>
-                                {zone || "Zone pending"}
-                              </span>
-                            ) : null}
-                            {r.alert_unlinked ? (
-                              <button
-                                className="link-btn"
-                                title="Pinned — click to follow DATE & TIME again"
-                                onClick={() => relink(i)}
-                              >
-                                🔗
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
                         <details className="stop-full-info">
-                          <summary>Full info</summary>
-                          <input
-                            className="facility-input"
-                            placeholder="Facility name"
-                            value={r.name}
-                            onChange={(e) => update(i, "name", e.target.value)}
-                          />
-                          <textarea
-                            className="dest-input"
-                            rows={2}
-                            placeholder="Address / full stop details"
-                            value={r.destination}
-                            onChange={(e) =>
-                              update(i, "destination", e.target.value.replace(/\s*\n\s*/g, " "))
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") e.preventDefault();
-                            }}
-                            onPaste={(e) => handleDestPaste(i, e)}
-                          />
+                          <summary>
+                            Full info
+                            {r.source && !r.appt_at ? (
+                              <span className="stop-time-warning"> · appointment time required</span>
+                            ) : null}
+                          </summary>
+                          <div className="stop-full-fields">
+                            <div className="stop-when">
+                              <select
+                                className="kind-select"
+                                value={r.kind}
+                                onChange={(e) => update(i, "kind", e.target.value)}
+                              >
+                                <option value="delivery">DEL</option>
+                                <option value="pickup">PU</option>
+                              </select>
+                              <input
+                                className="small"
+                                type="datetime-local"
+                                value={r.appt_at}
+                                onChange={(e) => update(i, "appt_at", e.target.value)}
+                              />
+                              {showZone ? (
+                                <span className="tz-tag" title={zoneHint}>
+                                  {zone || "Zone pending"}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="alert-deadline">
+                              <span>ALERT IF</span>
+                              <div className="alert-cell">
+                                <input
+                                  className="small"
+                                  type="datetime-local"
+                                  value={r.deadline}
+                                  onChange={(e) => update(i, "deadline", e.target.value)}
+                                />
+                                {showZone ? (
+                                  <span className="tz-tag" title={zoneHint}>
+                                    {zone || "Zone pending"}
+                                  </span>
+                                ) : null}
+                                {r.alert_unlinked ? (
+                                  <button
+                                    className="link-btn"
+                                    title="Pinned — click to follow DATE & TIME again"
+                                    onClick={() => relink(i)}
+                                  >
+                                    🔗
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                            <input
+                              className="facility-input"
+                              placeholder="Facility name"
+                              value={r.name}
+                              onChange={(e) => update(i, "name", e.target.value)}
+                            />
+                            <textarea
+                              className="dest-input"
+                              rows={2}
+                              placeholder="Address / full stop details"
+                              value={r.destination}
+                              onChange={(e) =>
+                                update(i, "destination", e.target.value.replace(/\s*\n\s*/g, " "))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") e.preventDefault();
+                              }}
+                              onPaste={(e) => handleDestPaste(i, e)}
+                            />
+                          </div>
                         </details>
                       </div>
                     </td>

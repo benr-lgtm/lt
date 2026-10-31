@@ -131,6 +131,14 @@ async function importTelegramLoad(chatId, text) {
     await sendTelegramMessage(chatId, "I couldn't find pickup or delivery stops with usable appointment or address information. Please send the full load text.");
     return Response.json({ ok: true });
   }
+  const missingTime = stops.filter((stop) => !stop.appointmentAt && !stop.deadline);
+  if (missingTime.length) {
+    await sendTelegramMessage(
+      chatId,
+      `No stops were added. Appointment date and time are missing for ${missingTime.length} stop${missingTime.length === 1 ? "" : "s"}. Please include a date and time for every pickup and delivery, then resend the dispatch.`
+    );
+    return Response.json({ ok: true });
+  }
   const futureStops = stops.filter((stop) => !appointmentHasPassed(stop));
   const skippedPast = stops.length - futureStops.length;
   stops = futureStops;
@@ -345,16 +353,35 @@ async function updateAllForUser(chatId, origin) {
     return;
   }
 
+  const result = await response.json().catch(() => ({}));
+  const completedIds = new Set((result.results || []).map((item) => Number(item.id)));
+  if (!completedIds.size) {
+    if (result.deferred) {
+      await sendTelegramMessage(
+        chatId,
+        `${result.deferred} load${result.deferred === 1 ? " is" : "s are"} still waiting for an update. Send Update all again shortly.`,
+        { reply_markup: updateAllKeyboard() }
+      );
+    }
+    return;
+  }
   const { data: refreshed, error: refreshError } = await supabase
     .from("loads")
     .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at")
     .eq("user_id", profile.id)
-    .in("id", ids)
+    .in("id", [...completedIds])
     .is("deleted_at", null)
     .order("position", { ascending: true });
   if (refreshError) throw refreshError;
   for (const load of refreshed || []) {
     await sendTelegramLoadReport(chatId, load);
+  }
+  if (result.deferred) {
+    await sendTelegramMessage(
+      chatId,
+      `${result.deferred} load${result.deferred === 1 ? " is" : "s are"} still waiting for an update. Send Update all again shortly.`,
+      { reply_markup: updateAllKeyboard() }
+    );
   }
 }
 

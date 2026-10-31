@@ -127,7 +127,8 @@ export async function GET(req) {
     // its past-due next_check_at and is simply first in the queue two minutes
     // later, so the work drains rather than being dropped.
     const started = Date.now();
-    const BUDGET_MS = Number(process.env.CHECK_BUDGET_MS || 45000);
+    const defaultBudget = requestedIds ? 52000 : 45000;
+    const BUDGET_MS = Number(process.env.CHECK_BUDGET_MS || defaultBudget);
 
     outer: for (const [userId, loads] of byUser) {
       const ctx = await userContext(supabase, userId, loads);

@@ -370,9 +370,24 @@ tbody tr:hover { background: var(--panel-3); }
 .alert-cell { display: flex; align-items: center; gap: 5px; }
 .alert-cell input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 12px; padding: 7px 6px; }
 .stop-full-info { font-size: 12px; }
-.stop-full-info summary { width: fit-content; color: var(--ink-2); cursor: pointer; font-weight: 600; }
-.stop-full-info[open] { display: flex; flex-direction: column; gap: 5px; }
-.stop-full-info .facility-input { margin-top: 4px; }
+.stop-full-info summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  width: fit-content;
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+}
+.stop-full-info summary::marker { font-size: 11px; }
+.stop-full-info summary:hover { background: var(--panel-2); color: var(--ink); }
+.stop-full-info[open] { display: flex; flex-direction: column; gap: 8px; }
+.stop-full-fields { display: flex; flex-direction: column; gap: 7px; min-width: 310px; }
+.stop-time-warning { color: var(--red); font-size: 12px; font-weight: 600; }
 
 /* A textarea rather than an input: a full street address is routinely two
    lines, and clipping it to one hid the part that distinguishes two stops in
