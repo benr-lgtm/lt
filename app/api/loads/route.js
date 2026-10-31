@@ -115,8 +115,6 @@ export async function PUT(req) {
           : hasRowId
           ? null
           : byPos.get(position);
-      const telegramIntervalChanged =
-        !prev || Number(prev.telegram_interval_minutes || 0) !== telegram_interval_minutes;
       const empty =
         !name && !load_number && !truck_number && !samsara_url && !destination && !deadline && !appt_at && !notes;
       if (empty) {
@@ -191,9 +189,7 @@ export async function PUT(req) {
           telegram_late_notified_at: null,
           telegram_arrived_notified_at: null,
           telegram_last_sent_at: null,
-          telegram_next_at: telegram_enabled
-            ? new Date(Date.now() + telegram_interval_minutes * 60 * 1000).toISOString()
-            : null,
+          telegram_next_at: null,
           // Editing the row is a fresh start: if the new link also dies, that
           // is worth another email.
           blackout_alerted: false,
@@ -235,15 +231,11 @@ export async function PUT(req) {
           status: prev.status ?? "unknown",
           status_note: prev.status_note ?? null,
           alerted: prev.alerted ?? false,
-          telegram_pending_status: telegram_enabled ? prev.telegram_pending_status ?? null : null,
+          telegram_pending_status: prev.telegram_pending_status ?? null,
           telegram_late_notified_at: prev.telegram_late_notified_at ?? null,
           telegram_arrived_notified_at: prev.telegram_arrived_notified_at ?? null,
           telegram_last_sent_at: prev.telegram_last_sent_at ?? null,
-          telegram_next_at: telegram_enabled
-            ? telegramIntervalChanged || !prev.telegram_next_at
-              ? new Date(Date.now() + telegram_interval_minutes * 60 * 1000).toISOString()
-              : prev.telegram_next_at
-            : null,
+          telegram_next_at: null,
           // Must appear in BOTH branches: PostgREST inserts the union of keys
           // across a bulk upsert and NULLs the gaps, so listing a column on
           // only one branch wipes it on every other row.
