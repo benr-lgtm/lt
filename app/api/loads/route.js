@@ -1,17 +1,10 @@
 import { getSessionUser, unauthorized } from "../../../lib/supabaseServer";
 import { looksLikeShareUrl, shareLinkProblem } from "../../../lib/shareLink";
-import { verifyShareLink } from "../../../lib/samsaraShare";
 import { tzFromCoords } from "../../../lib/samsara";
 import { MAX_ROWS } from "../../../lib/rows";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Saving now makes live calls to Samsara to verify new links, and Vercel's
-// default function limit is 10 seconds. A save that times out loses the
-// dispatcher's typing — by far the worst failure this app can have — so the
-// budget is raised well past anything the verification can consume.
-export const maxDuration = 30;
-
 // Deadlines are wall-clock times in the DESTINATION's timezone — a 09:00
 // appointment means 09:00 where the receiver is, not where the dispatcher is
 // sitting. That is the correct semantic, but it is invisible in the UI, so
@@ -65,17 +58,27 @@ export async function PUT(req) {
     // The UI enforces this too, but the UI is not a security boundary.
     const maxRows = profile?.max_rows ?? MAX_ROWS;
 
-    const { data: existing } = await supabase.from("loads").select("*").is("deleted_at", null);
-    const byPos = new Map((existing || []).map((r) => [r.position, r]));
+    const { data: existing, error: existingError } = await supabase
+      .from("loads")
+      .select("*")
+      .is("deleted_at", null);
+    if (existingError) throw existingError;
+    const existingRows = existing || [];
+    const byPos = new Map(existingRows.map((r) => [r.position, r]));
+    const byId = new Map(existingRows.map((r) => [Number(r.id), r]));
 
     const upserts = [];
     const deletions = [];
     const linkErrors = [];
+    const retainedIds = new Set();
+    const submittedPositions = new Set();
     let filled = 0;
 
     for (const r of rows) {
       const position = Number(r.position);
       if (!Number.isInteger(position) || position < 0 || position >= maxRows * 4) continue;
+      if (submittedPositions.has(position)) throw new Error("Duplicate load position.");
+      submittedPositions.add(position);
 
       const name = trim(r.name);
       const load_number = trim(r.load_number);
@@ -85,12 +88,10 @@ export async function PUT(req) {
       const destination = trim(r.destination);
       const notes = trim(r.notes);
       const alert_unlinked = !!r.alert_unlinked;
-      const interval = Number(r.telegram_interval_minutes);
-      const telegram_interval_minutes = [0, 30, 60, 120, 180].includes(interval) ? interval : 0;
-      const telegram_enabled = telegram_interval_minutes > 0;
-      // Absent means "not sent by an older client", which must not silently
-      // disable alerting — only an explicit false turns it off.
-      const alert_enabled = r.alert_enabled !== false;
+      const telegram_interval_minutes = 0;
+      const telegram_enabled = false;
+      const tracking_enabled = r.tracking_enabled !== false;
+      const alert_enabled = tracking_enabled;
       const checkin_enabled = !!r.checkin_enabled;
 
       const source = (r.source || "").trim();
@@ -106,20 +107,33 @@ export async function PUT(req) {
       const linkProblem = isLink ? shareLinkProblem(source) : null;
       if (linkProblem) linkErrors.push({ row: position + 1, message: linkProblem });
 
-      const prev = byPos.get(position);
+      const requestedId = Number(r.id);
+      const hasRowId = Object.prototype.hasOwnProperty.call(r, "id");
+      const prev =
+        Number.isSafeInteger(requestedId) && requestedId > 0
+          ? byId.get(requestedId)
+          : hasRowId
+          ? null
+          : byPos.get(position);
       const telegramIntervalChanged =
         !prev || Number(prev.telegram_interval_minutes || 0) !== telegram_interval_minutes;
       const empty =
         !name && !load_number && !truck_number && !samsara_url && !destination && !deadline && !appt_at && !notes;
       if (empty) {
-        if (prev) deletions.push(position);
+        if (prev) deletions.push(prev.position);
         continue;
       }
 
       filled++;
       // Enforce the plan's row cap server-side. The UI also blocks this, but the
       // UI is not a security boundary.
-      if (filled > maxRows) break;
+      if (filled > maxRows) {
+        if (prev) retainedIds.add(Number(prev.id));
+        for (const remaining of existingRows) {
+          if (remaining.position >= position) retainedIds.add(Number(remaining.id));
+        }
+        break;
+      }
 
       // Anything that changes what we're tracking invalidates the cached result.
       const changed =
@@ -129,6 +143,7 @@ export async function PUT(req) {
         prev.destination !== destination ||
         prev.deadline !== deadline ||
         prev.kind !== kind;
+      const trackingChanged = !prev || prev.tracking_enabled !== tracking_enabled;
 
       // Trackable means "has somewhere to look and something to be late for".
       // Note there is no affordability test any more: billing happens on
@@ -136,9 +151,13 @@ export async function PUT(req) {
       // never be the reason a load silently stops being watched. A broken link
       // is different: there is genuinely nowhere to look, so it is not
       // scheduled at all rather than scheduled and failing.
-      const trackable = !!((truck_number || samsara_url) && deadline) && !linkProblem;
+      const trackable =
+        !!((truck_number || samsara_url) && deadline) &&
+        !linkProblem &&
+        tracking_enabled;
 
       const row = {
+        ...(prev ? { id: prev.id } : {}),
         user_id: user.id,
         position,
         load_number,
@@ -151,6 +170,7 @@ export async function PUT(req) {
         samsara_url,
         destination,
         notes,
+        tracking_enabled,
         alert_enabled,
         telegram_enabled,
         telegram_interval_minutes,
@@ -205,6 +225,8 @@ export async function PUT(req) {
           next_check_at: trackable ? new Date().toISOString() : null,
           charged_at: prev?.charged_at ?? null,
           cycle: prev?.cycle ?? 0,
+          motion: prev?.motion ?? null,
+          motion_updated_at: prev?.motion_updated_at ?? null,
           dest_lat: prev && prev.destination === destination ? prev.dest_lat ?? null : null,
           dest_lng: prev && prev.destination === destination ? prev.dest_lng ?? null : null,
         });
@@ -247,67 +269,51 @@ export async function PUT(req) {
           next_check_at: prev.next_check_at ?? null,
           charged_at: prev.charged_at ?? null,
           cycle: prev.cycle ?? 0,
+          motion: prev.motion ?? null,
+          motion_updated_at: prev.motion_updated_at ?? null,
           dest_lat: prev.dest_lat ?? null,
           dest_lng: prev.dest_lng ?? null,
         });
       }
+      if (!tracking_enabled) row.next_check_at = null;
+      else if (trackingChanged && trackable) row.next_check_at = new Date().toISOString();
+      if (!changed && prev) row.updated_at = prev.updated_at ?? row.updated_at;
+      if (prev) retainedIds.add(Number(prev.id));
       upserts.push(row);
     }
 
-    // Live-check any link that is new or has changed.
-    //
-    // An expired Samsara link is silent: HTTP 200, no error, just no data. So
-    // it cannot be spotted from the URL and will not announce itself — the row
-    // simply never tracks. Verifying at save turns that into a message while
-    // the user is still holding the clipboard, instead of a blank row noticed
-    // hours later.
-    //
-    // Only NEW or CHANGED links are checked, so re-saving a table of twenty
-    // loads costs nothing. VERIFY_LIMIT caps a bulk paste so one save cannot
-    // outrun the function timeout.
-    const VERIFY_LIMIT = 8;
-    // Short, and shorter than the route's own budget. If Samsara is slow the
-    // save must still land — an unverified link is caught by the checker a
-    // couple of minutes later, whereas a lost save is gone for good.
-    const VERIFY_TIMEOUT_MS = 6000;
-    const toVerify = upserts
-      .filter((u) => u.samsara_url && u.next_check_at) // changed + trackable
-      .slice(0, VERIFY_LIMIT);
-    if (toVerify.length) {
-      const results = await Promise.all(
-        toVerify.map((u) =>
-          verifyShareLink(u.samsara_url, { timeoutMs: VERIFY_TIMEOUT_MS }).catch(() => ({
-            ok: true,
-            reason: "unreachable",
-          }))
-        )
-      );
-      results.forEach((res, i) => {
-        if (res.ok) return;
-        const u = toVerify[i];
-        u.status = "error";
-        u.status_note = res.message;
-        u.next_check_at = null; // nowhere to look; do not schedule it
-        linkErrors.push({ row: u.position + 1, message: res.message });
-      });
+    for (const row of existingRows) {
+      if (!retainedIds.has(Number(row.id)) && !deletions.includes(row.position)) {
+        deletions.push(row.position);
+      }
     }
 
+    // Keep retired rows available in History. Surviving rows are staged at a
+    // unique negative position so their IDs and histories survive compaction.
     if (deletions.length) {
-      // Retire, don't destroy. A cleared row keeps its load block, appointment
-      // and tracking result for a week on the History page — clearing the wrong
-      // line used to be unrecoverable.
-      //
-      // Done in SQL rather than a PostgREST update because the row must also be
-      // moved out of the live position space (position = -id). Leaving it on
-      // its old position would collide with the next load saved there, since
-      // ON CONFLICT needs a plain unique index over (user_id, position).
       const { error } = await supabase.rpc("retire_loads", { p_positions: deletions });
       if (error) throw error;
     }
-    if (upserts.length) {
-      const { error } = await supabase
+    const updates = upserts.filter((row) => row.id);
+    const inserts = upserts.filter((row) => !row.id);
+    if (updates.length) {
+      const positionsChanged = updates.some(
+        (row) => byId.get(Number(row.id))?.position !== row.position
+      );
+      if (positionsChanged) {
+        const { error } = await supabase.rpc("compact_load_positions", {
+          p_assignments: updates.map((row) => ({ id: row.id, position: row.position })),
+          p_user_id: user.id,
+        });
+        if (error) throw error;
+      }
+      const { error: updateError } = await supabase
         .from("loads")
-        .upsert(upserts, { onConflict: "user_id,position" });
+        .upsert(updates, { onConflict: "id" });
+      if (updateError) throw updateError;
+    }
+    if (inserts.length) {
+      const { error } = await supabase.from("loads").insert(inserts);
       if (error) throw error;
     }
 

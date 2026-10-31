@@ -342,11 +342,11 @@ tbody tr:hover { background: var(--panel-3); }
 .clear-btn:active { transform: translateY(1px); }
 .cell-input { width: 100%; min-width: 110px; }
 .source-input { width: 100%; min-width: 110px; max-width: 160px; }
-.col-load-number { width: 110px; min-width: 100px; }
-.load-number-input { width: 100%; min-width: 90px; }
+.col-load-number { width: 190px; min-width: 170px; }
+.load-number-input { width: 100%; min-width: 155px; }
 /* ---------- merged paste cell (kind + time + facility + address) ---------- */
-.col-stop { width: 300px; }
-.stop-cell { display: flex; flex-direction: column; gap: 5px; min-width: 290px; }
+.col-stop { width: 330px; }
+.stop-cell { display: flex; flex-direction: column; gap: 5px; min-width: 310px; }
 /* Sits between the time and the address, matching the order of a pasted load
    block. Same compact metrics as its neighbours so the stack reads as one
    control rather than three borrowed ones. */
@@ -360,6 +360,19 @@ tbody tr:hover { background: var(--panel-3); }
 /* Narrower here than the standalone .kind-select: it only ever reads DEL or
    PU, and the datetime beside it needs the room. */
 .stop-when .kind-select { width: 68px; padding: 7px 6px; font-size: 13px; }
+.alert-deadline { display: flex; flex-direction: column; gap: 3px; }
+.alert-deadline > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.alert-cell { display: flex; align-items: center; gap: 5px; }
+.alert-cell input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 12px; padding: 7px 6px; }
+.stop-full-info { font-size: 12px; }
+.stop-full-info summary { width: fit-content; color: var(--ink-2); cursor: pointer; font-weight: 600; }
+.stop-full-info[open] { display: flex; flex-direction: column; gap: 5px; }
+.stop-full-info .facility-input { margin-top: 4px; }
 
 /* A textarea rather than an input: a full street address is routinely two
    lines, and clipping it to one hid the part that distinguishes two stops in
@@ -477,9 +490,6 @@ input:disabled { background: var(--disabled-bg); color: var(--disabled-ink); cur
    DATE & TIME rendered wider than its old 150px. Shrinking the type and padding
    is what actually narrows them — and it can't clip, because the browser still
    fits the full text. */
-.col-half .cell-input.small,
-.col-half input[type="datetime-local"] { min-width: 0; width: 100%; font-size: 12px; padding: 7px 6px; }
-.col-half .kind-select { width: 52px; font-size: 12px; padding: 7px 4px; }
 /* Destination timezone beside the date fields. Deadlines are wall-clock times
    at the RECEIVER, so without this a dispatcher reading their own clock can be
    a whole timezone out and never know it. */
@@ -632,9 +642,41 @@ input:disabled { background: var(--disabled-bg); color: var(--disabled-ink); cur
 .checkin-toggle input { width: 14px; height: 14px; }
 
 /* "Email alerts" column: alert / remind stacked, each with a tappable hint. */
-.col-mail { width: 104px; }
+.col-mail { width: 132px; min-width: 124px; }
 .mail-toggle { position: relative; display: flex; align-items: center; gap: 5px; line-height: 1.9; }
-.mail-toggle input { width: 14px; height: 14px; flex: none; cursor: pointer; }
+.switch-control { position: relative; display: inline-flex; width: 40px; height: 24px; flex: none; cursor: pointer; }
+.switch-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--disabled-bg);
+  transition: background 0.15s, border-color 0.15s;
+}
+.switch-slider::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  content: "";
+  transition: transform 0.15s;
+}
+.switch-control input:checked + .switch-slider { border-color: var(--green); background: var(--green); }
+.switch-control input:checked + .switch-slider::before { transform: translateX(16px); }
+.switch-control input:focus-visible + .switch-slider { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.motion-value { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.motion-value.stale { color: var(--muted); font-weight: 400; }
+.col-motion { width: 92px; min-width: 88px; }
 .mail-toggle-word {
   border: 0;
   background: none;
@@ -788,8 +830,7 @@ input:disabled { background: var(--disabled-bg); color: var(--disabled-ink); cur
 .header-right { display: flex; align-items: center; gap: 12px; }
 
 /* Three-way segmented control: light / dark / follow the system. Small and
-   glyph-only because it is a preference, not an action — it should not compete
-   with Save & Check for attention. */
+   glyph-only because it is a preference, not an action. */
 .theme-toggle {
   display: inline-flex;
   background: var(--chip);

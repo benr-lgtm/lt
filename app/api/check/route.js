@@ -9,6 +9,8 @@ import {
   findStopNear,
 } from "../../../lib/samsara";
 import { fetchShareLocation } from "../../../lib/samsaraShare";
+import { fetchMotiveLocation } from "../../../lib/motiveShare";
+import { parseMotiveUrl } from "../../../lib/shareLink";
 import { geocode, estimateEta, haversineMiles, ARRIVAL_MILES } from "../../../lib/maps";
 import {
   sendLateEmail,
@@ -19,7 +21,7 @@ import {
 import { nextCheckAt, slackMsFrom, graceMs } from "../../../lib/scheduler";
 import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
-import { sendTelegramMessage } from "../../../lib/telegram";
+import { sendTelegramLoadReport } from "../../../lib/telegramReport";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -94,11 +96,13 @@ export async function GET(req) {
     let query = supabase
       .from("loads")
       .select("*")
+      .is("deleted_at", null)
       .not("next_check_at", "is", null);
     if (requestedIds) {
       query = query.in("id", requestedIds).limit(requestedIds.length);
     } else {
       query = query
+        .eq("tracking_enabled", true)
         .lte("next_check_at", nowIso)
         .order("next_check_at", { ascending: true })
         .limit(limit);
@@ -229,7 +233,10 @@ async function checkOne(supabase, load, ctx) {
     // can only ever describe an unbroken dwell at this destination.
     const nearby =
       pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_NEAR_MILES;
-    const stationary = nearby && typeof pos.speed === "number" && pos.speed <= STOPPED_MPH;
+    const speedFresh =
+      typeof pos.speed === "number" &&
+      (!Number.isFinite(pos.fixTimeMs) || Date.now() - pos.fixTimeMs <= 30 * 60 * 1000);
+    const stationary = nearby && speedFresh && pos.speed <= STOPPED_MPH;
     const stoppedSince = stationary ? load.stopped_since || new Date().toISOString() : null;
     const dwelledMs = stoppedSince ? Date.now() - new Date(stoppedSince).getTime() : 0;
 
@@ -269,8 +276,8 @@ async function checkOne(supabase, load, ctx) {
 
     const arrivedClose =
       destTrusted && pos.precision === "exact" && straightMiles != null && straightMiles < ARRIVAL_MILES;
-    // Speed is only present for truck#/Samsara-API rows. Live Share rows have
-    // no speed, so they keep the distance-only rule rather than never arriving.
+    // Older share links may not include speed; those keep the distance-only
+    // arrival rule rather than never arriving.
     const arrivedDwell = destTrusted && stationary && dwelledMs >= ARRIVAL_DWELL_MS;
 
     // Live checks are samples, so a short stop can fall between two of them.
@@ -303,7 +310,7 @@ async function checkOne(supabase, load, ctx) {
         charged,
         patch: {
           status: "arrived",
-          telegram_pending_status: load.telegram_enabled ? "arrived" : null,
+          telegram_pending_status: "arrived",
           // Say which rule fired: "arrived" a quarter-mile from the pin looks
           // like a bug unless the row explains that the truck has been parked
           // there for twenty minutes.
@@ -463,7 +470,7 @@ async function checkOne(supabase, load, ctx) {
       patch: {
         status,
         telegram_pending_status:
-          status === "late" && load.status !== "late" && load.telegram_enabled
+          status === "late" && load.status !== "late"
             ? "late"
             : load.telegram_pending_status ?? null,
         status_note: alertNote,
@@ -484,7 +491,9 @@ async function checkOne(supabase, load, ctx) {
         // out is about to arrive whatever its buffer, and missing that moment
         // is how a row ends up measuring the distance to a stop it already
         // completed and left.
-        next_check_at: nextCheckAt({ slackMs: slack, etaMs: est.seconds * 1000 }),
+        next_check_at: load.tracking_enabled === false
+          ? null
+          : nextCheckAt({ slackMs: slack, etaMs: est.seconds * 1000 }),
       },
       pos,
     });
@@ -508,18 +517,25 @@ async function resolvePosition(load, ctx) {
       tier: null,
       // Drives the dwell-based arrival rule. Only truck#/API rows have it.
       speed: gps.speed,
+      fixTimeMs: gps.time ? Date.parse(gps.time) : null,
     };
   }
 
   if (load.samsara_url) {
-    const share = await fetchShareLocation(load.samsara_url);
+    const motive = parseMotiveUrl(load.samsara_url);
+    const share = motive
+      ? await fetchMotiveLocation(load.samsara_url)
+      : await fetchShareLocation(load.samsara_url);
     return {
       lat: share.lat,
       lng: share.lng,
       formatted: share.formatted,
-      source: "graphql",
+      source: motive ? "motive_share" : "graphql",
       precision: "exact",
-      tier: 1,
+      tier: motive ? 2 : 1,
+      speed: share.speed,
+      motion: share.motion,
+      fixTimeMs: share.fixTimeMs,
       share,
     };
   }
@@ -618,6 +634,7 @@ function checkinDueAt(load, tz) {
 }
 
 async function finish(supabase, load, { patch, pos, ...rest }) {
+  const motion = motionForPosition(load, pos);
   await supabase
     .from("loads")
     .update({
@@ -636,19 +653,64 @@ async function finish(supabase, load, { patch, pos, ...rest }) {
       position_source: pos?.source ?? load.position_source,
       position_precision: pos?.precision ?? load.position_precision,
       link_tier: pos?.tier ?? load.link_tier,
+      motion: motion.motion,
+      motion_updated_at: motion.updatedAt,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", load.id);
+    .eq("id", load.id)
+    .is("deleted_at", null);
   return rest;
+}
+
+function motionForPosition(load, pos) {
+  const previous = load.motion || null;
+  const previousAt = load.motion_updated_at || null;
+  const speedFresh =
+    typeof pos?.speed === "number" &&
+    (!Number.isFinite(pos.fixTimeMs) || Date.now() - pos.fixTimeMs <= 30 * 60 * 1000);
+  const fixAt =
+    Number.isFinite(pos?.fixTimeMs) && pos.fixTimeMs > 0
+      ? new Date(pos.fixTimeMs).toISOString()
+      : new Date().toISOString();
+  if (speedFresh && Number.isFinite(pos.speed)) {
+    return {
+      motion: pos.speed > STOPPED_MPH ? "Rolling" : "Stopped",
+      updatedAt: fixAt,
+    };
+  }
+  if (
+    typeof pos?.speed === "number" &&
+    Number.isFinite(pos.speed) &&
+    !previous
+  ) {
+    return {
+      motion: pos.speed > STOPPED_MPH ? "Rolling" : "Stopped",
+      updatedAt: fixAt,
+    };
+  }
+  if (pos?.motion === "Rolling" || pos?.motion === "Stopped") {
+    return { motion: pos.motion, updatedAt: fixAt };
+  }
+  if (pos?.lat != null && pos?.lng != null && load.last_lat != null && load.last_lng != null) {
+    const movedMiles = haversineMiles(
+      { lat: load.last_lat, lng: load.last_lng },
+      { lat: pos.lat, lng: pos.lng }
+    );
+    if (movedMiles != null && movedMiles > 0.1) {
+      return { motion: "Rolling", updatedAt: fixAt };
+    }
+  }
+  return { motion: previous, updatedAt: previousAt };
 }
 
 // Failures that will never fix themselves on a retry. Re-checking these is
 // pure waste — the row needs a person, not another attempt.
 const PERMANENT_FAILURES = [
-  /not a recognizable samsara live share link/i,
-  /add a truck # or a live share link/i,
+  /not a recognizable (?:samsara|motive).*share link/i,
+  /add a truck # or .*share link/i,
   /destination required/i,
   /share link returned no data/i, // expired or revoked link
+  /motive share returned no usable vehicle location/i,
 ];
 
 // Give up after this many consecutive failures even for retryable errors. Five
@@ -677,9 +739,9 @@ async function fail(supabase, load, note, out, pos = null, ctx = null) {
   const backoffMs = Math.min(30 * 60 * 1000 * 2 ** (fails - 1), 8 * 60 * 60 * 1000);
 
   const suffix = permanent
-    ? " Fix the row and press Save & Check."
+    ? " Fix the row and turn Track on, or use Update all now."
     : exhausted
-    ? ` Stopped after ${fails} failed attempts — fix the row and press Save & Check.`
+    ? ` Stopped after ${fails} failed attempts — fix the row and turn Track on, or use Update all now.`
     : "";
 
   // Tell someone the load has gone dark.
@@ -718,13 +780,17 @@ async function fail(supabase, load, note, out, pos = null, ctx = null) {
       status_note: (text.slice(0, 200 - suffix.length) + suffix).slice(0, 200),
       fail_count: fails,
       blackout_alerted: blackoutAlerted,
-      next_check_at: giveUp ? null : new Date(Date.now() + backoffMs).toISOString(),
+      next_check_at:
+        giveUp || load.tracking_enabled === false
+          ? null
+          : new Date(Date.now() + backoffMs).toISOString(),
       last_lat: pos?.lat ?? load.last_lat,
       last_lng: pos?.lng ?? load.last_lng,
       last_place: pos?.formatted ?? load.last_place,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", load.id);
+    .eq("id", load.id)
+    .is("deleted_at", null);
   return { ...out, status: "error", error: note, gaveUp: giveUp };
 }
 
@@ -737,6 +803,7 @@ async function sweepCheckins(supabase) {
     .from("loads")
     .select("*")
     .eq("checkin_enabled", true)
+    .is("deleted_at", null)
     .not("checkin_due_at", "is", null)
     .lte("checkin_due_at", now)
     .is("checkin_state", null)
@@ -748,7 +815,8 @@ async function sweepCheckins(supabase) {
     await supabase
       .from("loads")
       .update({ checkin_state: "due", checkin_prompted_at: now })
-      .eq("id", load.id);
+      .eq("id", load.id)
+      .is("deleted_at", null);
     prompted++;
 
     const { data: profile } = await supabase
@@ -800,48 +868,26 @@ async function sweepCheckins(supabase) {
   };
 }
 
-// Periodic updates and status changes share one retryable send path. Scheduled
-// checks run every two minutes, so cadence updates are delivered within that
-// window of their selected time.
+// Status-change reports are sent once per load. Periodic Telegram updates are
+// no longer configured per row; Track controls scheduled checks.
 async function sweepTelegramNotifications(supabase) {
   const pending = [];
   const { data: events, error: eventError } = await supabase
-      .from("loads")
-      .select("*")
-      .eq("telegram_enabled", true)
-      .in("telegram_pending_status", ["late", "arrived"])
-      .limit(50);
+    .from("loads")
+    .select("*")
+    .is("deleted_at", null)
+    .in("telegram_pending_status", ["late", "arrived"])
+    .limit(50);
   if (eventError) {
     console.warn("Telegram status notification query failed:", eventError.message);
     return { sent: 0, failed: 1 };
   }
-  const dueAt = new Date().toISOString();
-  const { data: due, error: dueError } = await supabase
-    .from("loads")
-    .select("*")
-    .eq("telegram_enabled", true)
-    .in("status", ["on_time", "late", "error"])
-    .not("telegram_next_at", "is", null)
-    .lte("telegram_next_at", dueAt)
-    .limit(100);
-  if (dueError) {
-    console.warn("Telegram scheduled update query failed:", dueError.message);
-    return { sent: 0, failed: 1 };
-  }
-  const byId = new Map();
-  for (const load of events || []) byId.set(load.id, { load, event: true, scheduled: false });
-  for (const load of due || []) {
-    const item = byId.get(load.id) || { load, event: false, scheduled: false };
-    item.load = load.telegram_pending_status ? load : item.load;
-    item.scheduled = true;
-    byId.set(load.id, item);
-  }
-  pending.push(...byId.values());
+  pending.push(...(events || []).map((load) => ({ load, event: true })));
 
   const profiles = new Map();
   let sent = 0;
   let failed = 0;
-  for (const { load, event, scheduled } of pending) {
+  for (const { load, event } of pending) {
     try {
       let profile = profiles.get(load.user_id);
       if (!profile) {
@@ -856,29 +902,22 @@ async function sweepTelegramNotifications(supabase) {
       if (!profile?.telegram_chat_id) continue;
       const eventStatus = event ? load.telegram_pending_status : null;
       const status = eventStatus || load.status;
-      await sendTelegramMessage(
-        profile.telegram_chat_id,
-        telegramLoadMessage(load, status, !event && scheduled)
-      );
+      await sendTelegramLoadReport(profile.telegram_chat_id, load, status);
 
       const now = new Date();
-      const interval = Number(load.telegram_interval_minutes) || 0;
       const patch = { telegram_last_sent_at: now.toISOString() };
       if (eventStatus === "late") patch.telegram_late_notified_at = now.toISOString();
       if (eventStatus === "arrived") {
         patch.telegram_arrived_notified_at = now.toISOString();
         patch.telegram_next_at = null;
-      } else if (eventStatus === "late" && interval > 0) {
-        patch.telegram_next_at = new Date(now.getTime() + interval * 60 * 1000).toISOString();
       }
       if (eventStatus) patch.telegram_pending_status = null;
-      if (scheduled) {
-        patch.telegram_next_at = status === "arrived" || interval <= 0
-          ? null
-          : new Date(now.getTime() + interval * 60 * 1000).toISOString();
-      }
 
-      let update = supabase.from("loads").update(patch).eq("id", load.id);
+      let update = supabase
+        .from("loads")
+        .update(patch)
+        .eq("id", load.id)
+        .is("deleted_at", null);
       if (eventStatus) update = update.eq("telegram_pending_status", eventStatus);
       const { error } = await update;
       if (error) throw error;
@@ -889,27 +928,6 @@ async function sweepTelegramNotifications(supabase) {
     }
   }
   return { sent, failed };
-}
-
-function telegramLoadMessage(load, status, periodic = false) {
-  const title = load.name || `Load ${Number(load.position) + 1}`;
-  const lines = [
-    periodic
-      ? "TruckOn.site: Load update"
-      : status === "late"
-      ? "TruckOn.site: Load is late"
-      : "TruckOn.site: Load arrived",
-    title,
-    `Status: ${status === "on_time" ? "On time" : status === "late" ? "Late" : status === "arrived" ? "Arrived" : "Tracking issue"}`,
-    load.truck_number ? `Truck: ${load.truck_number}` : null,
-    load.destination ? `Destination: ${load.destination}` : null,
-    load.eta_display ? `ETA: ${load.eta_display}` : null,
-    load.truck_at ? `Last location: ${load.truck_at}` : null,
-    typeof load.miles_left === "number" ? `Miles left: ${Math.round(load.miles_left)}` : null,
-    load.notes ? `Notes: ${load.notes}` : null,
-    load.status_note ? `Details: ${load.status_note}` : null,
-  ].filter(Boolean);
-  return lines.join("\n").slice(0, 4000);
 }
 
 function groupBy(list, fn) {

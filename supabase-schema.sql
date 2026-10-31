@@ -24,10 +24,14 @@ alter table public.loads add column if not exists status       text not null def
 alter table public.loads add column if not exists status_note  text;
 alter table public.loads add column if not exists notes        text;
 alter table public.loads add column if not exists alerted      boolean not null default false;
+alter table public.loads add column if not exists tracking_enabled boolean not null default true;
+alter table public.loads alter column tracking_enabled set default false;
+alter table public.loads add column if not exists motion       text;
+alter table public.loads add column if not exists motion_updated_at timestamptz;
 alter table public.loads add column if not exists updated_at   timestamptz not null default now();
 
--- Saves use "upsert on conflict (position)", which REQUIRES this unique index.
--- Older tables may be missing it; this adds it safely.
+-- Keep positions unique for the single-user legacy schema.
+-- Multi-user deployments use their existing (user_id, position) index.
 create unique index if not exists loads_position_key on public.loads(position);
 
 -- The app talks to Supabase only from the server using the service-role key,

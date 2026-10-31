@@ -1,10 +1,9 @@
 # TruckOn.site
 
-A single-page app for dispatchers. For each load you enter a **deadline** plus
-**one of two things**:
+A single-page app for dispatchers. For each load you enter an appointment and **one of two tracking sources**:
 
 - a **truck #** — for trucks on a Samsara account you have an API token for, or
-- a pasted **Live Share link** — for trucks you *don't* have API access to.
+- a public **Samsara or Motive vehicle share link** — for trucks you *don't* have API access to.
 
 The app tracks each load's ETA and **emails you if it slips past the deadline**.
 
@@ -12,6 +11,7 @@ The app tracks each load's ETA and **emails you if it slips past the deadline**.
 - **Storage:** **Supabase** (Postgres)
 - **Truck location (truck #):** **Samsara API** (read-only, one or more accounts)
 - **Truck location (Live Share):** Samsara's public share endpoint, read server-side
+- **Motive share links:** public Motive vehicle-share locations are read server-side
 - **Route + distance:** **OpenRouteService** `driving-hgv`, with dry-van
   height/weight restrictions so a 13'6" trailer is never routed under a low bridge
 - **Speed along that route:** **Mapbox** — live traffic on the final approach,
@@ -19,6 +19,21 @@ The app tracks each load's ETA and **emails you if it slips past the deadline**.
 - **Geocoding:** **Nominatim** → ORS → Google, best precision wins
 - **Email:** **Resend**
 - **Scheduler:** **Supabase `pg_cron`** calls `/api/check` every 2 minutes
+
+The board saves edits automatically. **Track** enables scheduled checks and late
+email alerts; **Update all now** runs a one-time check even when Track is off.
+New rows start with Track off. Motion is based on reported vehicle speed or the
+provider's movement state, and old readings are marked stale. Clearing a row
+removes it from the active board and reports while retaining it in History.
+
+Run [`supabase-tracking-migration.sql`](./supabase-tracking-migration.sql) in the
+Supabase SQL editor to add the tracking toggle, motion fields, and safe
+compaction function. Existing rows stay tracked; newly inserted rows default to
+Track off.
+
+Motive's public share endpoint is used read-only. Its web-share key is publicly
+embedded in Motive's tracking client; `MOTIVE_WEB_SHARE_API_KEY` can override it
+if Motive rotates that client key.
 
 ## How it works (hybrid)
 
@@ -31,10 +46,10 @@ truck-# loads refresh every 5 minutes**. Read-only — nothing is created in you
 Samsara.
 
 **Live Share link (scrape mode).** For trucks on an account you can't get a token
-for, paste the public `cloud.samsara.com/…/fleet/viewer/…` link. The app renders
-that page headless and reads Samsara's own ETA off it. This is heavier, so
-link-based loads refresh a **few per check** (`CHECK_BATCH_LINKS`, default 2).
-The destination is already baked into the link, so you leave that column blank.
+for, paste the public `cloud.samsara.com/…/fleet/viewer/…` or
+`tracking.gomotive.com/…/share/v/<uuid>` link. Their public endpoints provide
+location and, when available, speed. The destination comes from the board's
+address, not the share link.
 
 Either way: if the ETA is past your deadline, the row turns **Late** and you get
 **one** email.
@@ -104,15 +119,13 @@ Alert recipients are configured per account in **Settings**, not by an env var.
    `https://truckon.site`), then redeploy.
 4. In Supabase SQL Editor, run [`supabase-telegram-migration.sql`](./supabase-telegram-migration.sql).
 5. In TruckOn **Settings**, choose **Connect Telegram**, open the generated bot
-   link, and press **Start**. Then choose a Telegram update frequency for each
-   load: **Off**, **30 min**, **1 hour**, **2 hours**, or **3 hours**. Updates
-   include the load status, truck, destination, ETA, last location, miles left,
-   and notes. Late and arrival changes also send an immediate notification.
+   link, and press **Start**. Use **Update all now** on the website or **Update
+   all** in Telegram for one report per load. Reports are formatted in
+   monospace and include motion, ETA status, location, and miles left. Late and
+   arrival changes also send an immediate notification.
 
 The app registers the Telegram webhook when you create the connection link. The
-link expires after 15 minutes and can only be used once. The existing checker
-runs every two minutes, so scheduled updates may arrive up to two minutes after
-their selected interval. If the bot token shown
+link expires after 15 minutes and can only be used once. If the bot token shown
 in a local environment file or chat is exposed, revoke it with BotFather and
 replace it in Vercel before reconnecting.
 
@@ -123,10 +136,11 @@ replace it in Vercel before reconnecting.
    row; when one Load # line lists multiple IDs, only the first is used.
 3. If you send the message directly to the connected Telegram bot, its stops are
    added to your board automatically. If missing, reply to the bot with a truck
-   number or Samsara Live Share URL to attach it to those stops. Use the bot's
-   **Update all** reply button for a one-time report. On the website, **Update
-   all now** refreshes every active trackable load and sends a one-time report
-   to your connected Telegram, even if recurring updates are Off.
+   number or Samsara/Motive vehicle share URL to attach it to those stops. Use
+   the bot's **Update all** reply button for a one-time report. New imported
+   loads start with Track off; turn it on from the website to schedule checks.
+   On the website, **Update all now** sends a one-time report even if Track is
+   off.
 
 ### 7. Deploy to Vercel
 1. Push this folder to a GitHub repo.
@@ -224,10 +238,11 @@ The same endpoint also reports missing environment variables and warns if
    for each. It understands `Delivery`/`DEL`/`Pickup`/`PU`, `MM/DD/YY` and
    `MM-DD-YYYY` dates, and times like `0900`, `07:00 AM`, `2300`, `23:59`. If a
    block has no time (e.g. "straight", "Ready now"), it's set to 23:59 — adjust if
-   needed. Then just add the **truck # or Live Share link** to each row.
-4. Or fill a row by hand: optional **notes**, the **truck # or Live Share link**,
+   needed. Then just add the **truck # or vehicle share link** to each row.
+4. Or fill a row by hand: optional **notes**, the **truck # or vehicle share link**,
    the **destination** (skip if using a link), and the **DEL/PU date & time**.
-5. Click **Save**. Statuses fill in on the next check, or click **Check now**.
+5. Changes save automatically. Turn on **Track** for scheduled checks and late
+   email alerts, or click **Update all now** for a one-time check.
 
 Status meanings: **On time** (ETA before deadline), **Late** (ETA past it — one
 email sent), **Check failed** (truck not found, address couldn't be located, or a
@@ -263,6 +278,9 @@ Open http://localhost:3000.
   `GOOGLE_MAPS_KEY` — Google is more forgiving of typos and extra text, and since
   geocoding runs once per load and is cached, the Google cost is negligible even
   though ETAs stay on Mapbox's free tier. With a Google key set, the app also
-  falls back to Google automatically whenever Mapbox can't find an address.
+  falls back to Google automatically whenever Mapbox can't find an address. If
+  both the truck-legal and Mapbox routes fail the distance plausibility check,
+  Google Directions is also tried when `GOOGLE_MAPS_KEY` is configured. This is
+  a car route, so the resulting mileage is marked non-truck-legal internally.
 - Want zero maps dependency later? The ETA math is isolated in `lib/maps.js`, so
   it can be swapped for Samsara-created routes without touching the rest.

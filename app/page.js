@@ -16,6 +16,7 @@ import {
   withSpare,
   mergeRows,
   applyServerFields,
+  applySavedRows,
 } from "../lib/rows";
 import { shareLinkProblem } from "../lib/shareLink";
 
@@ -185,18 +186,22 @@ function StatusBadge({ row }) {
 // phone. So the checkbox and its word are separate controls: tapping the box
 // toggles, tapping the word reveals the hint. Wrapping both in one <label>
 // would have made the word toggle the box, leaving no way to just read it.
-function MailToggle({ label, hint, checked, onChange }) {
+function MailToggle({ label, hint, checked, onChange, disabled = false }) {
   const id = useId();
   const [showTip, setShowTip] = useState(false);
   return (
     <div className="mail-toggle">
-      <input
-        id={id}
-        type="checkbox"
-        aria-label={hint}
-        checked={!!checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
+      <label className="switch-control" htmlFor={id}>
+        <input
+          id={id}
+          type="checkbox"
+          aria-label={hint}
+          checked={!!checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="switch-slider" aria-hidden="true" />
+      </label>
       <button
         type="button"
         className="mail-toggle-word"
@@ -212,6 +217,11 @@ function MailToggle({ label, hint, checked, onChange }) {
   );
 }
 
+function motionStale(at) {
+  const timestamp = Date.parse(at || "");
+  return !Number.isFinite(timestamp) || Date.now() - timestamp > 30 * 60 * 1000;
+}
+
 export default function Page() {
   const [rows, setRows] = useState(() => Array.from({ length: MIN_ROWS }, (_, i) => blankRow(i)));
   const [profile, setProfile] = useState(null);
@@ -224,10 +234,14 @@ export default function Page() {
   const [showAiImport, setShowAiImport] = useState(false);
   const [aiText, setAiText] = useState("");
   const [aiParsing, setAiParsing] = useState(false);
-  // Positions the server currently has rows for. The on-screen table is not a
-  // reliable record of this: it shrinks as it empties, so it can forget rows
-  // that still exist in the database.
-  const serverPositions = useRef(new Set());
+  const latestRows = useRef(rows);
+  latestRows.current = rows;
+  const editVersionRef = useRef(0);
+  const saveInFlight = useRef(false);
+  const saveAgain = useRef(false);
+  const saveTimer = useRef(null);
+  const suppressAutosave = useRef(false);
+  const [editVersion, setEditVersion] = useState(0);
 
   // Declared before refresh() so every row-building call site can be given the
   // account's cap. An admin can lower it per profile; MAX_ROWS is the default.
@@ -239,23 +253,22 @@ export default function Page() {
   async function refresh({ full = false } = {}) {
     const r = await fetch("/api/loads").then((x) => x.json());
     if (r.loads) {
-      serverPositions.current = new Set(r.loads.map((l) => l.position));
       setRows((prev) => (full ? mergeRows(r.loads, maxRows) : applyServerFields(prev, r.loads)));
     }
     if (r.profile) setProfile(r.profile);
     if (r.error) setMessage("Couldn't load data: " + r.error);
   }
 
-  // A row that has been SAVED and has everything it needs but no result yet is
-  // still being worked on by the background checker.
-  //
-  // The `r.id` test is essential: without it a row became "checking" the moment
-  // the truck # and date were typed, which showed the working spinner before
-  // anything had been submitted and put the whole table on a 12-second poll
-  // while the user was still typing into it. Nothing contacts a provider until
-  // Save & Check writes the row and the worker picks it up.
   const checking = useMemo(
-    () => rows.some((r) => r.id && r.source && r.deadline && r.status === "unknown"),
+    () =>
+      rows.some(
+        (r) =>
+          r.tracking_enabled &&
+          r.id &&
+          r.source &&
+          r.deadline &&
+          r.status === "unknown"
+      ),
     [rows]
   );
 
@@ -284,44 +297,16 @@ export default function Page() {
   // other blanks don't. Everything below it is just runway.
   const firstEmpty = useMemo(() => rows.findIndex((r) => rowEmpty(r)), [rows]);
 
-  // ---- Save & Check throttle -------------------------------------------
-  //
-  // Every saved row is queued for an immediate check, so repeated saves are
-  // what turn one table into dozens of provider calls. The button locks for
-  // COOLDOWN_MIN_MS and then stays locked until the first results land.
-  //
-  // COOLDOWN_MAX_MS is the release valve: `checking` clears when the worker
-  // writes a result, but if the cron is wedged it would never clear, and a
-  // permanently dead button is a worse failure than an extra API call. After
-  // three minutes the user gets control back regardless.
-  const COOLDOWN_MIN_MS = 30000;
-  const COOLDOWN_MAX_MS = 180000;
-  const [lockedAt, setLockedAt] = useState(0);
-  const [tick, setTick] = useState(0);
-
-  const sinceSave = lockedAt ? tick - lockedAt : Infinity;
-  const locked =
-    lockedAt > 0 &&
-    (sinceSave < COOLDOWN_MIN_MS || (checking && sinceSave < COOLDOWN_MAX_MS));
-  const cooldownLeft = locked ? Math.ceil((COOLDOWN_MIN_MS - sinceSave) / 1000) : 0;
-
-  useEffect(() => {
-    if (!lockedAt) return;
-    setTick(Date.now());
-    const t = setInterval(() => setTick(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [lockedAt]);
-
-  useEffect(() => {
-    // Drop the timer once the lock expires so the page isn't ticking forever.
-    if (lockedAt && !locked) setLockedAt(0);
-  }, [locked, lockedAt]);
+  function markDirty() {
+    editVersionRef.current += 1;
+    setEditVersion(editVersionRef.current);
+  }
 
   function update(i, field, value) {
+    markDirty();
     setRows((prev) => {
       const next = prev.slice();
       const row = { ...next[i], [field]: value };
-      row.pending_delete = false;
       // The alert time mirrors the appointment until it's edited directly,
       // after which it stays pinned so an appointment change can't silently
       // move the thing the alerts actually fire on.
@@ -333,6 +318,7 @@ export default function Page() {
   }
 
   function relink(i) {
+    markDirty();
     setRows((prev) => {
       const next = prev.slice();
       next[i] = { ...next[i], alert_unlinked: false, deadline: next[i].appt_at };
@@ -340,22 +326,37 @@ export default function Page() {
     });
   }
 
-  function clearRow(i) {
+  function setTracking(i, enabled) {
+    markDirty();
     setRows((prev) => {
       const next = prev.slice();
-      next[i] = { ...blankRow(next[i].position), pending_delete: !!next[i].id };
-      return withSpare(next, maxRows);
+      next[i] = { ...next[i], tracking_enabled: enabled, alert_enabled: enabled };
+      return next;
     });
-    setMessage("Row cleared — it leaves the database on the next save.");
+  }
+
+  function clearRow(i) {
+    markDirty();
+    setRows((prev) => {
+      return withSpare(
+        prev.filter((_, index) => index !== i).map((row, position) => ({ ...row, position })),
+        maxRows
+      );
+    });
+    setMessage("Row removed — saving changes…");
   }
 
   async function clearAll() {
-    if (!window.confirm("Clear ALL rows? This cannot be undone.")) return;
+    if (!window.confirm("Clear ALL rows? They will be removed from the board and kept in History for 7 days.")) return;
+    clearTimeout(saveTimer.current);
+    saveAgain.current = false;
+    suppressAutosave.current = true;
+    editVersionRef.current += 1;
+    setEditVersion(editVersionRef.current);
     setSaving(true);
     try {
       const res = await fetch("/api/loads", { method: "DELETE" }).then((r) => r.json());
       if (res.error) return setMessage("Clear failed: " + res.error);
-      serverPositions.current = new Set();
       setRows(Array.from({ length: MIN_ROWS }, (_, i) => blankRow(i)));
       setMessage("All loads cleared.");
     } finally {
@@ -368,6 +369,7 @@ export default function Page() {
     const parsed = parseLoads(text);
     if (!parsed.length) return;
     e.preventDefault();
+    markDirty();
     let assumed = 0;
     setRows((prev) => {
       const next = prev.slice();
@@ -394,102 +396,89 @@ export default function Page() {
       }
       return withSpare(next, maxRows);
     });
-    let msg = `Added ${parsed.length} stop${parsed.length === 1 ? "" : "s"}. Add the truck # or Live Share link, then Save.`;
+    let msg = `Added ${parsed.length} stop${parsed.length === 1 ? "" : "s"}. Add the truck # or a Samsara/Motive share link.`;
     if (assumed) msg += ` ${assumed} had no time — set to 23:59; adjust if needed.`;
     setMessage(msg);
   }
 
   async function save() {
+    if (saveInFlight.current) {
+      saveAgain.current = true;
+      return;
+    }
+    saveInFlight.current = true;
     setSaving(true);
-    setMessage("Saving…");
     try {
-      const payload = rows.map((r) => ({
-        position: r.position,
-        load_number: r.load_number,
-        name: r.name,
-        kind: r.kind,
-        appt_at: r.appt_at,
-        deadline: r.deadline || r.appt_at,
-        alert_unlinked: r.alert_unlinked,
-        source: r.source,
-        destination: r.destination,
-        notes: r.notes,
-        alert_enabled: r.alert_enabled,
-        telegram_enabled: r.telegram_interval_minutes > 0,
-        telegram_interval_minutes: r.telegram_interval_minutes,
-        checkin_enabled: r.checkin_enabled,
-      }));
-
-      // Deletions are expressed as "this position is now empty", so a position
-      // the server holds MUST appear in the payload to be removed.
-      //
-      // The table shrinks when it empties out — withSpare keeps only MIN_ROWS
-      // plus a few spares — so clearing the last rows dropped them from the
-      // array before this ran. They vanished from the screen, were never sent,
-      // and came straight back on the next refresh. That is why the bottom
-      // rows would not delete no matter how many times you tried.
-      //
-      // Anything the server knows about and the screen no longer shows is
-      // therefore added back as an explicit blank.
-      const sent = new Set(payload.map((p) => p.position));
-      for (const pos of serverPositions.current) {
-        if (sent.has(pos)) continue;
-        payload.push({
-          position: pos,
-          load_number: "",
-          name: "",
-          kind: "delivery",
-          appt_at: "",
-          deadline: "",
-          alert_unlinked: false,
-          source: "",
-          destination: "",
-          notes: "",
-          alert_enabled: true,
+      let more = true;
+      while (more) {
+        saveAgain.current = false;
+        const version = editVersionRef.current;
+        const payload = latestRows.current.map((r) => ({
+          client_key: r.client_key,
+          id: r.id,
+          position: r.position,
+          load_number: r.load_number,
+          name: r.name,
+          kind: r.kind,
+          appt_at: r.appt_at,
+          deadline: r.deadline || r.appt_at,
+          alert_unlinked: r.alert_unlinked,
+          source: r.source,
+          destination: r.destination,
+          notes: r.notes,
+          tracking_enabled: r.tracking_enabled,
+          alert_enabled: r.tracking_enabled,
           telegram_enabled: false,
           telegram_interval_minutes: 0,
-          checkin_enabled: false,
+          checkin_enabled: r.checkin_enabled,
+        }));
+        const response = await fetch("/api/loads", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: payload }),
         });
+        const res = await response.json();
+        if (!response.ok || res.error) throw new Error(res.error || "Could not save changes.");
+
+        if (res.loads) {
+          setRows((current) => applySavedRows(current, res.loads, payload));
+        }
+        if (res.profile) setProfile(res.profile);
+        const changedDuringSave = version !== editVersionRef.current || saveAgain.current;
+        const bad = res.linkErrors || [];
+        if (bad.length) {
+          setMessage(
+            `Saved, but ${bad.length === 1 ? "row" : "rows"} ${bad
+              .map((e) => e.row)
+              .join(", ")} ${bad.length === 1 ? "has" : "have"} an invalid tracking link: ${bad[0].message}`
+          );
+        } else if (!changedDuringSave) {
+          setMessage("All changes saved.");
+        }
+        more = changedDuringSave;
       }
-      const res = await fetch("/api/loads", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows: payload }),
-      }).then((r) => r.json());
-      if (res.error) return setMessage("Save failed: " + res.error);
-      // The PUT response IS the server's post-save truth, so a full rebuild is
-      // correct here (unlike the poll).
-      if (res.loads) {
-        serverPositions.current = new Set(res.loads.map((l) => l.position));
-        setRows(mergeRows(res.loads, maxRows));
-      }
-      if (res.profile) setProfile(res.profile);
-      setLockedAt(Date.now());
-      // A bad link is not a failed save — the rest of the table is fine — but
-      // it must not be reported as an unqualified success either, or the user
-      // walks away believing a load is being watched when it isn't.
-      const bad = res.linkErrors || [];
-      if (bad.length) {
-        setMessage(
-          `Saved, but ${bad.length === 1 ? "row" : "rows"} ${bad
-            .map((e) => e.row)
-            .join(", ")} ${bad.length === 1 ? "isn't" : "aren't"} being tracked — ` +
-            bad[0].message
-        );
-      } else {
-        setMessage(
-          "Saved — checking now. ETAs appear on their own; you don't need to press anything again."
-        );
-      }
-      // Nudge the first refresh so a result can appear without waiting a full
-      // polling interval.
-      setTimeout(refresh, 4000);
     } catch (e) {
       setMessage("Save failed: " + e.message);
     } finally {
       setSaving(false);
+      saveInFlight.current = false;
+      if (saveAgain.current) {
+        saveAgain.current = false;
+        saveTimer.current = setTimeout(save, 400);
+      }
     }
   }
+
+  useEffect(() => {
+    if (editVersion === 0) return;
+    if (suppressAutosave.current) {
+      suppressAutosave.current = false;
+      return;
+    }
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(save, 600);
+    return () => clearTimeout(saveTimer.current);
+  }, [editVersion]);
 
   async function importWithAi() {
     if (!aiText.trim()) return setMessage("Paste the load information first.");
@@ -518,7 +507,7 @@ export default function Page() {
             index = next.length;
             next.push(blankRow(index));
           }
-          const source = stop.samsaraUrl || stop.truckNumber || "";
+          const source = stop.motiveUrl || stop.samsaraUrl || stop.truckNumber || "";
           next[index] = {
             ...next[index],
             name: stop.facility || (stop.kind === "pickup" ? "Pickup" : "Delivery"),
@@ -534,8 +523,9 @@ export default function Page() {
         }
         return withSpare(next, maxRows);
       });
+      markDirty();
       setMessage(
-        `Added ${stops.length} stop${stops.length === 1 ? "" : "s"} to the board. Add a truck number or Live Share link if missing, then choose Telegram updates and Save & Check.`
+        `Added ${stops.length} stop${stops.length === 1 ? "" : "s"} to the board. Add a truck number or a Samsara/Motive share link if missing, then turn on Track when ready.`
       );
       setAiText("");
       setShowAiImport(false);
@@ -581,19 +571,7 @@ export default function Page() {
   }
 
   const busy = saving || loading || updating;
-  const saveBlocked = busy || locked;
   const lowBalance = profile && profile.balance_cents < 200;
-
-  const saveLabel = saving
-    ? "Saving…"
-    : cooldownLeft > 0
-    ? `Checking… ${cooldownLeft}s`
-    : locked
-    ? "Checking…"
-    : "Save & Check";
-  const saveTitle = locked
-    ? "Checking the rows you just saved. The button unlocks when the first ETAs come back."
-    : "Save the table and start checking ETAs";
 
   // The table is wider than the viewport and the useful columns now sit at both
   // ends, so a bottom-only scrollbar means scrolling to the bottom of a 20-row
@@ -677,7 +655,11 @@ export default function Page() {
               Only the over-cap warning survives, because that one is actionable:
               rows past the cap are silently dropped on save. */}
           <span className="status-line">
-            {overCap ? `Over the ${maxRows}-row limit — extra rows won't save` : ""}
+            {overCap
+              ? `Over the ${maxRows}-row limit — extra rows won't save`
+              : saving
+              ? "Saving changes…"
+              : ""}
           </span>
           <div className="toolbar-actions">
             <button className="btn ghost pale" onClick={() => setShowHelp((v) => !v)}>
@@ -691,9 +673,6 @@ export default function Page() {
             </button>
             <button className="btn secondary" onClick={clearAll} disabled={busy}>
               Clear all
-            </button>
-            <button className="btn" onClick={save} disabled={saveBlocked} title={saveTitle}>
-              {saveLabel}
             </button>
           </div>
         </div>
@@ -710,7 +689,9 @@ export default function Page() {
             />
             <div className="ai-import-actions">
               <span className="field-hint">
-                AI will add each pickup and delivery as a board row. Missing truck numbers or Live Share links must be added before tracking can start.
+                AI will add each pickup and delivery as a board row. Add a truck
+                number or Samsara/Motive share link, then turn on Track to start
+                scheduled checks.
               </span>
               <button className="btn" onClick={importWithAi} disabled={aiParsing || busy}>
                 {aiParsing ? "Reading…" : "Read and add stops"}
@@ -781,14 +762,13 @@ export default function Page() {
                   <br />
                   left
                 </th>
+                <th className="col-motion">Motion</th>
                 <th className="col-status">Status</th>
                 <th className="col-checkin">Check-in</th>
                 <th>Link or truck #</th>
                 <th className="col-load-number">Load #</th>
-                <th className="col-stop">PASTE HERE 🔽</th>
-                <th className="col-half">ALERT IF LATER THAN…</th>
-                <th className="col-mail">Email alerts</th>
-                <th className="col-mail">Telegram updates</th>
+                <th className="col-stop">STOP / APPT</th>
+                <th className="col-mail">Track / Remind</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -802,6 +782,7 @@ export default function Page() {
                 // answer: either it has never produced one, or its scheduled
                 // time has come round and the cron hasn't swept it yet.
                 const pending =
+                  !!r.tracking_enabled &&
                   !!r.id &&
                   !!r.source &&
                   !!r.deadline &&
@@ -814,7 +795,7 @@ export default function Page() {
                   : "The destination time zone will appear after its address is resolved.";
                 return (
                   <tr
-                    key={i}
+                    key={r.client_key}
                     className={
                       (r.checkin_state === "missed" ? "row-missed " : "") +
                       (r.checkin_state === "due" ? "row-checkin " : "") +
@@ -865,6 +846,23 @@ export default function Page() {
                         <span title={r.position_precision === "city" ? "Approximate — city-level position" : ""}>
                           {Math.round(r.miles_left)}
                           {r.position_precision === "city" ? "≈" : ""}
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td className="col-motion">
+                      {r.motion ? (
+                        <span
+                          className={`motion-value ${motionStale(r.motion_updated_at) ? "stale" : ""}`}
+                          title={
+                            r.motion_updated_at
+                              ? `Last motion reading ${new Date(r.motion_updated_at).toLocaleString()}`
+                              : "Motion has not been reported yet"
+                          }
+                        >
+                          {r.motion}
+                          {motionStale(r.motion_updated_at) ? " · stale" : ""}
                         </span>
                       ) : (
                         <span className="muted">—</span>
@@ -958,86 +956,70 @@ export default function Page() {
                             </span>
                           ) : null}
                         </div>
-                        <input
-                          className="facility-input"
-                          placeholder="Facility name (from paste)"
-                          value={r.name}
-                          onChange={(e) => update(i, "name", e.target.value)}
-                        />
-                        <textarea
-                          className="dest-input"
-                          rows={2}
-                          placeholder="Paste the whole load block here"
-                          value={r.destination}
-                          // The address wraps visually; it must not contain
-                          // literal newlines. An <input> stripped them for
-                          // free, a <textarea> does not — and a newline inside
-                          // the string reaches the geocoder verbatim.
-                          onChange={(e) =>
-                            update(i, "destination", e.target.value.replace(/\s*\n\s*/g, " "))
-                          }
-                          // Enter would insert a newline that the handler above
-                          // then strips, which looks like the key doing nothing.
-                          // Blocking it is the honest version of the same result.
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") e.preventDefault();
-                          }}
-                          onPaste={(e) => handleDestPaste(i, e)}
-                        />
-                      </div>
-                    </td>
-                    <td className="col-half">
-                      <div className="alert-cell">
-                        <input
-                          className="small"
-                          type="datetime-local"
-                          value={r.deadline}
-                          onChange={(e) => update(i, "deadline", e.target.value)}
-                        />
-                        {showZone ? (
-                          <span className="tz-tag" title={zoneHint}>
-                            {zone || "Zone pending"}
-                          </span>
-                        ) : null}
-                        {r.alert_unlinked ? (
-                          <button
-                            className="link-btn"
-                            title="Pinned — click to follow DATE & TIME again"
-                            onClick={() => relink(i)}
-                          >
-                            🔗
-                          </button>
-                        ) : null}
+                        <div className="alert-deadline">
+                          <span>ALERT IF</span>
+                          <div className="alert-cell">
+                            <input
+                              className="small"
+                              type="datetime-local"
+                              value={r.deadline}
+                              onChange={(e) => update(i, "deadline", e.target.value)}
+                            />
+                            {showZone ? (
+                              <span className="tz-tag" title={zoneHint}>
+                                {zone || "Zone pending"}
+                              </span>
+                            ) : null}
+                            {r.alert_unlinked ? (
+                              <button
+                                className="link-btn"
+                                title="Pinned — click to follow DATE & TIME again"
+                                onClick={() => relink(i)}
+                              >
+                                🔗
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                        <details className="stop-full-info">
+                          <summary>Full info</summary>
+                          <input
+                            className="facility-input"
+                            placeholder="Facility name"
+                            value={r.name}
+                            onChange={(e) => update(i, "name", e.target.value)}
+                          />
+                          <textarea
+                            className="dest-input"
+                            rows={2}
+                            placeholder="Address / full stop details"
+                            value={r.destination}
+                            onChange={(e) =>
+                              update(i, "destination", e.target.value.replace(/\s*\n\s*/g, " "))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") e.preventDefault();
+                            }}
+                            onPaste={(e) => handleDestPaste(i, e)}
+                          />
+                        </details>
                       </div>
                     </td>
                     <td className="col-mail">
                       <MailToggle
-                        label="alert"
-                        hint="alert me if ETA is late"
-                        checked={r.alert_enabled}
-                        onChange={(v) => update(i, "alert_enabled", v)}
+                        label="Track"
+                        hint="schedule checks and send late email alerts"
+                        checked={r.tracking_enabled}
+                        disabled={rowEmpty(r)}
+                        onChange={(v) => setTracking(i, v)}
                       />
                       <MailToggle
-                        label="remind"
+                        label="Remind"
                         hint="remind me 5 min before del appt"
                         checked={r.checkin_enabled}
+                        disabled={rowEmpty(r)}
                         onChange={(v) => update(i, "checkin_enabled", v)}
                       />
-                    </td>
-                    <td className="col-mail">
-                      <select
-                        className="telegram-select"
-                        aria-label={`Telegram update frequency for load ${i + 1}`}
-                        title="Send this load's status and location to Telegram at this interval"
-                        value={r.telegram_interval_minutes}
-                        onChange={(e) => update(i, "telegram_interval_minutes", Number(e.target.value))}
-                      >
-                        <option value={0}>Off</option>
-                        <option value={30}>30 min</option>
-                        <option value={60}>1 hour</option>
-                        <option value={120}>2 hours</option>
-                        <option value={180}>3 hours</option>
-                      </select>
                     </td>
                     <td>
                       <input
@@ -1055,7 +1037,7 @@ export default function Page() {
                   no more rows coming and an ellipsis would be a lie. */}
               {rows.length < maxRows ? (
                 <tr className="more-row">
-                  <td colSpan={15} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
+                  <td colSpan={14} title={`More rows appear as you fill these in — up to ${maxRows}.`}>
                     <span className="more-dots">…</span>
                     <span className="more-text">
                       {maxRows - rows.length} more row
@@ -1065,7 +1047,7 @@ export default function Page() {
                 </tr>
               ) : (
                 <tr className="more-row">
-                  <td colSpan={15}>
+                  <td colSpan={14}>
                     <span className="more-text">
                       Row limit reached — {maxRows} of {maxRows}.
                     </span>
@@ -1081,9 +1063,6 @@ export default function Page() {
           <button className="btn secondary" onClick={clearAll} disabled={busy}>
             Clear all
           </button>
-          <button className="btn" onClick={save} disabled={saveBlocked} title={saveTitle}>
-            {saveLabel}
-          </button>
         </div>
       </div>
 
@@ -1094,4 +1073,3 @@ export default function Page() {
     </div>
   );
 }
-

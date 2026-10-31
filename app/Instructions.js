@@ -10,11 +10,11 @@ export default function Instructions() {
   return (
     <div className="instructions">
       <p className="instructions-lead">
-        Paste your dispatch notes straight into the <b>PASTE HERE 🔽</b> column.
-        One paste fills the stop type, date &amp; time, facility name and address
-        together — and one paste can fill <b>several rows at once</b>. Then add
-        the truck # or Samsara Live Share link and press{" "}
-        <b>Save &amp; Check</b>. Everything after that is automatic.
+        Enter the stop type and appointment in the board. Open <b>Full info</b>{" "}
+        for the facility and address, or paste dispatch notes there to fill
+        <b> several rows at once</b>. Add a truck # or Samsara/Motive share link.
+        Changes save automatically; turn on <b>Track</b> for scheduled checks
+        and late email alerts, or choose <b>Update all now</b> for a one-time check.
       </p>
 
       <p className="instructions-lead">
@@ -74,7 +74,7 @@ Lake Elmo, MN 55042`}</pre>
         </li>
       </ul>
 
-      <p className="instructions-note-lead">Then, once it&rsquo;s tracking:</p>
+      <p className="instructions-note-lead">Once the row is filled in:</p>
       <ul className="instructions-notes">
         <li>
           <b>DATE &amp; TIME</b> is the appointment. <b>ALERT IF LATER THAN…</b>{" "}
@@ -101,12 +101,17 @@ Lake Elmo, MN 55042`}</pre>
           catches trucks sitting in a big yard.
         </li>
         <li>
-          Tick <b>remind</b> to be prompted 5 minutes before the appointment to
+          Tick <b>Remind</b> to be prompted 5 minutes before the appointment to
           confirm the driver actually walked in and checked in.
         </li>
         <li>
-          A <b>Samsara Live Share link</b> works even without a destination set
-          in Samsara — we use the delivery address from your paste.
+          A <b>Samsara or Motive vehicle share link</b> works without a
+          destination set in the provider — we use the delivery address from
+          your paste.
+        </li>
+        <li>
+          <b>Motion</b> shows Rolling or Stopped from the latest available
+          provider reading. Old readings are labelled stale.
         </li>
         <li>
           You can track up to <b>100 loads</b>. The table opens with 10 rows and
@@ -140,7 +145,7 @@ Lake Elmo, MN 55042`}</pre>
         </video>
         <p className="instructions-video-note">
           Three minutes, no sound needed — pasting a load block, adding the truck
-          #, and what happens after Save &amp; Check.
+          #, and running Update all now.
         </p>
       </div>
     </div>

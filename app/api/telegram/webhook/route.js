@@ -1,8 +1,11 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { getSupabase } from "../../../../lib/supabase";
 import { configureTelegramWebhook, sendTelegramMessage, telegramWebhookSecret } from "../../../../lib/telegram";
+import { sendTelegramLoadReport } from "../../../../lib/telegramReport";
 import { parseLoadMessage } from "../../../../lib/groq";
 import { looksLikeShareUrl } from "../../../../lib/shareLink";
+import { shareLinkProblem } from "../../../../lib/shareLink";
+import { appointmentHasPassed } from "../../../../lib/dispatchTime";
 import { MAX_ROWS } from "../../../../lib/rows";
 
 export const runtime = "nodejs";
@@ -128,6 +131,13 @@ async function importTelegramLoad(chatId, text) {
     await sendTelegramMessage(chatId, "I couldn't find pickup or delivery stops with usable appointment or address information. Please send the full load text.");
     return Response.json({ ok: true });
   }
+  const futureStops = stops.filter((stop) => !appointmentHasPassed(stop));
+  const skippedPast = stops.length - futureStops.length;
+  stops = futureStops;
+  if (!stops.length) {
+    await sendTelegramMessage(chatId, "All pickup/delivery appointment times in that dispatch have already passed, so no stops were added.");
+    return Response.json({ ok: true });
+  }
 
   const { data: current, error: loadsError } = await supabase
     .from("loads")
@@ -150,9 +160,12 @@ async function importTelegramLoad(chatId, text) {
 
   const now = new Date().toISOString();
   const rows = stops.slice(0, positions.length).map((stop, index) => {
-    const shareUrl = stop.samsaraUrl && looksLikeShareUrl(stop.samsaraUrl) ? stop.samsaraUrl : null;
+    const candidateUrl = stop.motiveUrl || stop.samsaraUrl;
+    const shareUrl =
+      candidateUrl && looksLikeShareUrl(candidateUrl) && !shareLinkProblem(candidateUrl)
+        ? candidateUrl
+        : null;
     const truckNumber = !shareUrl ? stop.truckNumber : null;
-    const trackable = !!(shareUrl || truckNumber) && !!stop.deadline;
     return {
       user_id: profile.id,
       position: positions[index],
@@ -166,14 +179,15 @@ async function importTelegramLoad(chatId, text) {
       notes: stop.notes,
       truck_number: truckNumber,
       samsara_url: shareUrl,
-      alert_enabled: true,
+      tracking_enabled: false,
+      alert_enabled: false,
       telegram_enabled: false,
       telegram_interval_minutes: 0,
       telegram_next_at: null,
       telegram_pending_status: null,
       status: "unknown",
       status_note: null,
-      next_check_at: trackable ? now : null,
+      next_check_at: null,
       updated_at: now,
     };
   });
@@ -189,14 +203,15 @@ async function importTelegramLoad(chatId, text) {
   if (pendingError) throw pendingError;
 
   const sourceMissing = rows.some((row) => !row.truck_number && !row.samsara_url);
-    const omitted = stops.length - rows.length;
+  const omitted = stops.length - rows.length;
   let reply = `Added ${rows.length} stop${rows.length === 1 ? "" : "s"} to your TruckOn board.`;
-  if (sourceMissing) reply += " Reply with the truck number or Samsara Live Share link for these stops.";
-  else reply += " Send Update all whenever you want a fresh report.";
+  if (skippedPast > 0) reply += ` Skipped ${skippedPast} stop${skippedPast === 1 ? "" : "s"} with appointment times that had passed.`;
+  if (sourceMissing) reply += " Reply with the truck number or Samsara/Motive share link for these stops.";
+  else reply += " Turn on Track on the website for scheduled checks, or send Update all for a one-time report.";
   if (omitted > 0) reply += ` The board limit was reached; ${omitted} stop${omitted === 1 ? " was" : "s were"} not added.`;
   await sendTelegramMessage(
     chatId,
-      reply,
+    reply,
     { reply_markup: updateAllKeyboard() }
   );
   return Response.json({ ok: true, added: rows.length });
@@ -218,8 +233,8 @@ async function handleSourceReply(chatId, text) {
   if (!isUrl) {
     source = source.replace(/^truck(?:\s*(?:number|#)\s*)?/i, "").replace(/^#\s*/, "").trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,29}$/.test(source)) return false;
-  } else if (!looksLikeShareUrl(source)) {
-    await sendTelegramMessage(chatId, "That link does not look like a Samsara Live Share URL. Send a truck number or a full Live Share link.");
+  } else if (!looksLikeShareUrl(source) || shareLinkProblem(source)) {
+    await sendTelegramMessage(chatId, "That link does not look like a supported Samsara or Motive vehicle share URL. Send a truck number or the full share link.");
     return true;
   }
 
@@ -234,26 +249,39 @@ async function handleSourceReply(chatId, text) {
   if (!loads?.length) return false;
 
   const now = new Date().toISOString();
-  const { error: updateError } = await supabase
+  const sourceFields = {
+    truck_number: isUrl ? null : source,
+    samsara_url: isUrl ? source : null,
+    status: "unknown",
+    status_note: null,
+    alerted: false,
+    telegram_pending_status: null,
+    eta_iso: null,
+    eta_display: null,
+    truck_at: null,
+    miles_left: null,
+    fail_count: 0,
+    updated_at: now,
+  };
+  const { error: trackedUpdateError } = await supabase
     .from("loads")
     .update({
-      truck_number: isUrl ? null : source,
-      samsara_url: isUrl ? source : null,
-      status: "unknown",
-      status_note: null,
-      alerted: false,
-      telegram_pending_status: null,
-      eta_iso: null,
-      eta_display: null,
-      truck_at: null,
-      miles_left: null,
-      fail_count: 0,
+      ...sourceFields,
       next_check_at: now,
-      updated_at: now,
     })
     .eq("user_id", profile.id)
-    .eq("telegram_group_id", groupId);
-  if (updateError) throw updateError;
+    .eq("telegram_group_id", groupId)
+    .is("deleted_at", null)
+    .eq("tracking_enabled", true);
+  if (trackedUpdateError) throw trackedUpdateError;
+  const { error: untrackedUpdateError } = await supabase
+    .from("loads")
+    .update({ ...sourceFields, next_check_at: null })
+    .eq("user_id", profile.id)
+    .eq("telegram_group_id", groupId)
+    .is("deleted_at", null)
+    .eq("tracking_enabled", false);
+  if (untrackedUpdateError) throw untrackedUpdateError;
 
   const { error: clearError } = await supabase
     .from("profiles")
@@ -264,7 +292,7 @@ async function handleSourceReply(chatId, text) {
 
   await sendTelegramMessage(
     chatId,
-    `${isUrl ? "Samsara Live Share link" : `Truck #${source}`} attached to ${loads.length} stop${loads.length === 1 ? "" : "s"}. Send Update all whenever you want a fresh report.`,
+    `${isUrl ? "Vehicle share link" : `Truck #${source}`} attached to ${loads.length} stop${loads.length === 1 ? "" : "s"}. Turn on Track on the website for scheduled checks, or send Update all for a one-time report.`,
     { reply_markup: updateAllKeyboard() }
   );
   return true;
@@ -294,7 +322,7 @@ async function updateAllForUser(chatId, origin) {
     .map((load) => Number(load.id))
     .filter((id) => Number.isSafeInteger(id) && id > 0);
   if (!ids.length) {
-    await sendTelegramMessage(chatId, "No active loads with a truck number or Samsara Live Share link need an update.", { reply_markup: updateAllKeyboard() });
+    await sendTelegramMessage(chatId, "No active loads with a truck number or supported share link need an update.", { reply_markup: updateAllKeyboard() });
     return;
   }
 
@@ -319,22 +347,14 @@ async function updateAllForUser(chatId, origin) {
 
   const { data: refreshed, error: refreshError } = await supabase
     .from("loads")
-    .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left")
+    .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at")
     .eq("user_id", profile.id)
     .in("id", ids)
+    .is("deleted_at", null)
     .order("position", { ascending: true });
   if (refreshError) throw refreshError;
-  const reports = (refreshed || []).map((load) => {
-    const title = load.load_number ? `Load #${load.load_number}` : load.name || `${load.kind === "pickup" ? "Pickup" : "Delivery"} stop ${load.position + 1}`;
-    const status = load.status === "on_time" ? "On time" : load.status === "late" ? "Late" : load.status === "arrived" ? "Arrived" : load.status === "error" ? "Tracking issue" : "Checking";
-    return [title, `Status: ${status}`, load.eta_display ? `ETA: ${load.eta_display}` : null, load.truck_at ? `Current location: ${load.truck_at}` : null, typeof load.miles_left === "number" ? `${Math.round(load.miles_left)} miles left` : null, load.status_note ? `Details: ${load.status_note}` : null].filter(Boolean).join("\n");
-  });
-  for (let index = 0; index < reports.length; index += 8) {
-    await sendTelegramMessage(
-      chatId,
-      `TruckOn update all (${Math.min(index + 8, reports.length)}/${reports.length}):\n\n${reports.slice(index, index + 8).join("\n\n")}`,
-      { reply_markup: updateAllKeyboard() }
-    );
+  for (const load of refreshed || []) {
+    await sendTelegramLoadReport(chatId, load);
   }
 }
 
