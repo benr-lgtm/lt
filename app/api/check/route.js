@@ -10,6 +10,11 @@ import {
 } from "../../../lib/samsara";
 import { fetchShareLocation } from "../../../lib/samsaraShare";
 import { fetchMotiveLocation } from "../../../lib/motiveShare";
+import {
+  getMotiveVehicleGpsByName,
+  hasMotiveApiKey,
+  parseMotiveTruckNumber,
+} from "../../../lib/motiveApi";
 import { parseMotiveUrl } from "../../../lib/shareLink";
 import { geocode, estimateEta, haversineMiles, ARRIVAL_MILES } from "../../../lib/maps";
 import {
@@ -175,10 +180,17 @@ export async function GET(req) {
   }
 }
 
-// Per-user setup: their Samsara token, and one GPS fetch shared by all of
-// their truck# rows rather than one call per row.
+// One GPS lookup per provider and user-context batch, rather than one request
+// per truck-number row.
 async function userContext(supabase, userId, loads) {
-  const ctx = { gpsByName: null, gpsError: null, profile: null, tokens: [] };
+  const ctx = {
+    gpsByName: null,
+    gpsError: null,
+    motiveGpsByName: null,
+    motiveGpsError: null,
+    profile: null,
+    tokens: [],
+  };
   const { data: profile } = await supabase
     .from("profiles")
     .select(
@@ -197,16 +209,25 @@ async function userContext(supabase, userId, loads) {
   // Kept so the history backfill can reach the same account without decrypting
   // the token a second time per row.
   ctx.tokens = extra;
-  if (!hasSamsaraToken(extra)) {
-    ctx.gpsError = "No Samsara API token on this account — add one in Settings, or use a Live Share link.";
-    return ctx;
+  if (hasSamsaraToken(extra)) {
+    try {
+      const errs = [];
+      ctx.gpsByName = await getVehicleGpsByName(errs, extra);
+      if (errs.length && ctx.gpsByName.size === 0) ctx.gpsError = errs[0];
+    } catch (e) {
+      ctx.gpsError = e.message;
+    }
   }
-  try {
-    const errs = [];
-    ctx.gpsByName = await getVehicleGpsByName(errs, extra);
-    if (errs.length && ctx.gpsByName.size === 0) ctx.gpsError = errs[0];
-  } catch (e) {
-    ctx.gpsError = e.message;
+  if (hasMotiveApiKey()) {
+    try {
+      ctx.motiveGpsByName = await getMotiveVehicleGpsByName();
+    } catch (e) {
+      ctx.motiveGpsError = e.message;
+    }
+  }
+  if (!hasSamsaraToken(extra)) {
+    ctx.gpsError =
+      "No Samsara API token on this account. Configure a Motive API key for Motive truck numbers, or use a Live Share link.";
   }
   return ctx;
 }
@@ -503,22 +524,58 @@ async function checkOne(supabase, load, ctx) {
   }
 }
 
-// Truck# via the Samsara API, or a Live Share link via the GraphQL endpoint.
+// Truck numbers resolve against Samsara then Motive; share links use their
+// provider-specific readers.
 async function resolvePosition(load, ctx) {
   if (load.truck_number) {
+    const motiveTruck = parseMotiveTruckNumber(load.truck_number);
+    const lookupNumber = normalizeTruck(motiveTruck.number);
+    const samsaraGps = motiveTruck.explicit
+      ? null
+      : ctx.gpsByName?.get(lookupNumber);
+    if (samsaraGps) {
+      return {
+        lat: samsaraGps.lat,
+        lng: samsaraGps.lng,
+        formatted: samsaraGps.formatted,
+        source: "samsara_api",
+        precision: "exact",
+        tier: null,
+        speed: samsaraGps.speed,
+        fixTimeMs: samsaraGps.time ? Date.parse(samsaraGps.time) : null,
+      };
+    }
+
+    const motiveGps = ctx.motiveGpsByName?.get(lookupNumber);
+    if (motiveGps) {
+      return {
+        lat: motiveGps.lat,
+        lng: motiveGps.lng,
+        formatted: motiveGps.formatted,
+        source: "motive_api",
+        precision: "exact",
+        tier: null,
+        speed: motiveGps.speed,
+        motion: motiveGps.motion,
+        fixTimeMs: motiveGps.time ? Date.parse(motiveGps.time) : null,
+      };
+    }
+
+    if (motiveTruck.explicit && !hasMotiveApiKey()) {
+      return { error: "Motive truck numbers require the MOTIVE_API environment variable." };
+    }
+    if (ctx.motiveGpsError) {
+      return { error: ctx.motiveGpsError };
+    }
+    if (ctx.gpsError && !hasMotiveApiKey()) return { error: ctx.gpsError };
+    if (hasMotiveApiKey()) {
+      return {
+        error: `Truck ${motiveTruck.number} not found in the connected Samsara or Motive fleet. Check the fleet number and Motive access.`,
+      };
+    }
     if (ctx.gpsError) return { error: ctx.gpsError };
-    const gps = ctx.gpsByName?.get(normalizeTruck(load.truck_number));
-    if (!gps) return { error: "Truck not found in the connected Samsara account" };
     return {
-      lat: gps.lat,
-      lng: gps.lng,
-      formatted: gps.formatted,
-      source: "samsara_api",
-      precision: "exact",
-      tier: null,
-      // Drives the dwell-based arrival rule. Only truck#/API rows have it.
-      speed: gps.speed,
-      fixTimeMs: gps.time ? Date.parse(gps.time) : null,
+      error: "Truck not found in the connected Samsara account. For a Motive truck, set MOTIVE_API and enter it as Motive: 123.",
     };
   }
 

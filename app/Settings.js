@@ -323,7 +323,9 @@ export default function Settings({ profile, onClose, onSaved }) {
           Only needed if you want to type a <b>truck number</b> instead of pasting
           a Samsara Live Share link. It comes from your own Samsara account
           (Settings → API Tokens) and lets us read that fleet&rsquo;s live GPS.
-          Stored encrypted. Leave blank if you only use share links.
+          Stored encrypted. Motive truck numbers can also be entered in the load
+          source as <b>Motive: 123</b> when the app owner has configured
+          <code> MOTIVE_API </code> in Vercel.
         </p>
 
         <h3 className="section-head">Telegram alerts</h3>

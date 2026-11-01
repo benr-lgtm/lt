@@ -995,7 +995,7 @@ export default function Page() {
                         // Leads with the link shape, matching the column: it is
                         // the harder of the two to get right, and seeing the
                         // expected form is what stops a truncated paste.
-                        placeholder="https://cloud... or 3040"
+                        placeholder="Share link, truck #, or Motive: 123"
                         value={r.source}
                         onChange={(e) => update(i, "source", e.target.value)}
                         aria-invalid={badLink ? "true" : undefined}

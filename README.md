@@ -85,6 +85,13 @@ leading `#`, so `#3040` and `3040` both work — but `3040` won't match a vehicl
 named `Truck 3040`. (Live Share links don't need this — they carry their own
 identity.)
 
+Motive fleet numbers are also supported when the instance owner configures the
+Motive API key as the server-only `MOTIVE_API` environment variable. Enter a
+Motive truck as `Motive: 123` to choose that fleet explicitly; an unprefixed
+number checks Samsara first, then Motive. TruckOn reads current locations from
+Motive's `/v1/vehicle_locations` API. Motive's key must have read access to
+vehicle locations. Never use a `NEXT_PUBLIC_` variable for this key.
+
 ### 3. Routing providers
 1. Sign up for [OpenRouteService](https://openrouteservice.org/dev/#/signup)
    and set its API key as `ORS_API_KEY`. ORS is the primary truck-restricted
@@ -153,6 +160,7 @@ replace it in Vercel before reconnecting.
    | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
    | `SAMSARA_API_TOKEN` | optional — instance-owner fallback; users add their own in Settings |
    | `SAMSARA_API_TOKENS` | optional — other accounts' tokens, comma-separated |
+   | `MOTIVE_API` | optional — Motive API key for typed Motive truck numbers |
    | `ORS_API_KEY` | OpenRouteService key — supplies the truck-legal route |
    | `MAPBOX_TOKEN` | Mapbox public token — supplies the speed along it |
    | `GOOGLE_MAPS_KEY` | optional — last-resort geocoder for messy addresses |

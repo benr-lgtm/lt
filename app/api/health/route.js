@@ -40,6 +40,10 @@ export async function GET() {
     // missing one degrades every ETA to the ORS fallback rather than a few.
     MAPBOX_TOKEN: set("MAPBOX_TOKEN"),
     ORS_API_KEY: set("ORS_API_KEY"),
+    MOTIVE_API: {
+      set: !!process.env.MOTIVE_API,
+      required: false,
+    },
     // Reported but not required: the last-resort geocoder, only reached when
     // both Nominatim and ORS fail on an address. Its absence was previously
     // invisible here, which made "why did this address never resolve?"
