@@ -12,10 +12,9 @@ The app tracks each load's ETA and **emails you if it slips past the deadline**.
 - **Truck location (truck #):** **Samsara API** (read-only, one or more accounts)
 - **Truck location (Live Share):** Samsara's public share endpoint, read server-side
 - **Motive share links:** public Motive vehicle-share locations are read server-side
-- **Route + distance:** **OpenRouteService** `driving-hgv`, with dry-van
-  height/weight restrictions so a 13'6" trailer is never routed under a low bridge
-- **Speed along that route:** **Mapbox** — live traffic on the final approach,
-  free-flow beyond it
+- **Route + ETA:** **OpenRouteService** `driving-hgv`, with dry-van
+  height/weight restrictions; **Mapbox** is the first fallback and **Google
+  Directions** is the final fallback (both use car routing)
 - **Geocoding:** **Nominatim** → ORS → Google, best precision wins
 - **Email:** **Resend**
 - **Scheduler:** **Supabase `pg_cron`** calls `/api/check` every 2 minutes
@@ -40,10 +39,11 @@ if Motive rotates that client key.
 Each row is tracked by whichever identifier it has:
 
 **Truck # (API mode).** The app pulls that truck's latest GPS from Samsara (one
-call per connected account), geocodes your pasted destination once, and asks
-Mapbox for the live-traffic drive time. ETA = now + drive time. Fast, so **all
-truck-# loads refresh every 5 minutes**. Read-only — nothing is created in your
-Samsara.
+call per connected account), geocodes your pasted destination once, and gets a
+truck-restricted route and ETA from ORS. If ORS is unavailable, Mapbox is tried,
+then Google Directions. The fallback car routes cannot guarantee truck
+restrictions. **Truck-# loads refresh every 5 minutes**. Read-only — nothing is
+created in your Samsara.
 
 **Live Share link (scrape mode).** For trucks on an account you can't get a token
 for, paste the public `cloud.samsara.com/…/fleet/viewer/…` or
@@ -85,16 +85,15 @@ leading `#`, so `#3040` and `3040` both work — but `3040` won't match a vehicl
 named `Truck 3040`. (Live Share links don't need this — they carry their own
 identity.)
 
-### 3. Mapbox (ETA math)
-1. Sign up free at [mapbox.com](https://account.mapbox.com).
-2. Copy your **default public token** → `MAPBOX_TOKEN`.
-3. Leave `MAPS_PROVIDER=mapbox`.
-
-Mapbox's free tier includes ~100,000 Directions and ~100,000 Geocoding requests
-per month. Geocoding happens **once per load** (then it's cached), and ETAs are
-only computed for loads you've filled in — so at a normal fleet size this stays
-free. *(Prefer Google? Set `MAPS_PROVIDER=google` and `GOOGLE_MAPS_KEY`. Note
-Google bills per request after its free credit.)*
+### 3. Routing providers
+1. Sign up for [OpenRouteService](https://openrouteservice.org/dev/#/signup)
+   and set its API key as `ORS_API_KEY`. ORS is the primary truck-restricted
+   router.
+2. Set `MAPBOX_TOKEN` for the first fallback. Mapbox Directions includes
+   100,000 requests/month in its free tier.
+3. Optionally set `GOOGLE_MAPS_KEY` for the final fallback. Google bills per
+   request after its free credit. Both fallback services use car routing and
+   cannot guarantee truck restrictions.
 
 ### 4. Resend (email)
 1. Sign up at [resend.com](https://resend.com) and create an **API key** →
@@ -277,10 +276,9 @@ Open http://localhost:3000.
   majority. If some messy addresses miss, set `GEOCODE_PROVIDER=google` with a
   `GOOGLE_MAPS_KEY` — Google is more forgiving of typos and extra text, and since
   geocoding runs once per load and is cached, the Google cost is negligible even
-  though ETAs stay on Mapbox's free tier. With a Google key set, the app also
-  falls back to Google automatically whenever Mapbox can't find an address. If
-  both the truck-legal and Mapbox routes fail the distance plausibility check,
-  Google Directions is also tried when `GOOGLE_MAPS_KEY` is configured. This is
-  a car route, so the resulting mileage is marked non-truck-legal internally.
+  though routing prefers ORS. With a Google key set, the app also falls back to
+  Google automatically whenever Mapbox can't find an address. For directions,
+  ORS is primary; Mapbox and then Google are tried if the prior provider fails
+  or returns an implausible route. Fallback mileage is non-truck-legal.
 - Want zero maps dependency later? The ETA math is isolated in `lib/maps.js`, so
   it can be swapped for Samsara-created routes without touching the rest.
