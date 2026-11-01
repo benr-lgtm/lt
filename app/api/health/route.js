@@ -40,8 +40,12 @@ export async function GET() {
     // missing one degrades every ETA to the ORS fallback rather than a few.
     MAPBOX_TOKEN: set("MAPBOX_TOKEN"),
     ORS_API_KEY: set("ORS_API_KEY"),
-    MOTIVE_API: {
-      set: !!process.env.MOTIVE_API,
+    MOTIVE_OAUTH: {
+      set: !!(
+        process.env.MOTIVE_CLIENT_ID &&
+        process.env.MOTIVE_CLIENT_SECRET &&
+        process.env.MOTIVE_REDIRECT_URI
+      ),
       required: false,
     },
     // Reported but not required: the last-resort geocoder, only reached when

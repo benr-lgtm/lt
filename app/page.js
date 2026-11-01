@@ -633,8 +633,18 @@ export default function Page() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Update could not run.");
       await refresh();
+      const failures = (result.results || []).filter((item) => item.status === "error");
+      const failureSummary = failures
+        .map((item) => {
+          const label = item.position == null ? "Load" : `Row ${item.position + 1}`;
+          const loadNumber = item.load_number ? ` (load #${item.load_number})` : "";
+          return `${label}${loadNumber}: ${item.error || "check failed"}`;
+        })
+        .join(" | ");
       setMessage(
-        result.checked
+        failures.length
+          ? `${failures.length} of ${result.checked} load${result.checked === 1 ? "" : "s"} failed: ${failureSummary}`
+          : result.checked
           ? `Updated ${result.checked} load${result.checked === 1 ? "" : "s"}${result.deferred ? `; ${result.deferred} will continue in the background` : ""}.${result.telegramSent ? ` Sent Telegram report for ${result.telegramSent} stop${result.telegramSent === 1 ? "" : "s"}.` : " No Telegram report was sent."}${result.telegramError ? ` Telegram error: ${result.telegramError}` : ""}`
           : result.message || "No active loads need an update."
       );

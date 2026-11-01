@@ -12,7 +12,7 @@ import { fetchShareLocation } from "../../../lib/samsaraShare";
 import { fetchMotiveLocation } from "../../../lib/motiveShare";
 import {
   getMotiveVehicleGpsByName,
-  hasMotiveApiKey,
+  hasMotiveOAuthConfig,
   parseMotiveTruckNumber,
 } from "../../../lib/motiveApi";
 import { parseMotiveUrl } from "../../../lib/shareLink";
@@ -218,7 +218,17 @@ async function userContext(supabase, userId, loads) {
       ctx.gpsError = e.message;
     }
   }
-  if (hasMotiveApiKey()) {
+  const needsMotiveLookup =
+    hasMotiveOAuthConfig() &&
+    loads.some((load) => {
+      if (!load.truck_number) return false;
+      const motiveTruck = parseMotiveTruckNumber(load.truck_number);
+      return (
+        motiveTruck.explicit ||
+        !ctx.gpsByName?.has(normalizeTruck(motiveTruck.number))
+      );
+    });
+  if (needsMotiveLookup) {
     try {
       ctx.motiveGpsByName = await getMotiveVehicleGpsByName();
     } catch (e) {
@@ -227,13 +237,17 @@ async function userContext(supabase, userId, loads) {
   }
   if (!hasSamsaraToken(extra)) {
     ctx.gpsError =
-      "No Samsara API token on this account. Configure a Motive API key for Motive truck numbers, or use a Live Share link.";
+      "No Samsara API token on this account. Connect the shared Motive fleet from /admin for Motive truck numbers, or use a Live Share link.";
   }
   return ctx;
 }
 
 async function checkOne(supabase, load, ctx) {
-  const out = { id: load.id, position: load.position };
+  const out = {
+    id: load.id,
+    position: load.position,
+    load_number: load.load_number || null,
+  };
   try {
     // ---- 1. where is the truck? ----
     const pos = await resolvePosition(load, ctx);
@@ -378,7 +392,7 @@ async function checkOne(supabase, load, ctx) {
     const est = await estimateEta(
       { lat: pos.lat, lng: pos.lng },
       { lat: dest.lat, lng: dest.lng },
-      { timeZone: tz }
+      { timeZone: tz, allowTruckRouting: destTrusted }
     );
     const etaIso = new Date(Date.now() + est.seconds * 1000).toISOString();
     const deadlineIso = localToIso(load.deadline, tz);
@@ -548,6 +562,18 @@ async function resolvePosition(load, ctx) {
 
     const motiveGps = ctx.motiveGpsByName?.get(lookupNumber);
     if (motiveGps) {
+      if (
+        !Number.isFinite(motiveGps.lat) ||
+        motiveGps.lat < -90 ||
+        motiveGps.lat > 90 ||
+        !Number.isFinite(motiveGps.lng) ||
+        motiveGps.lng < -180 ||
+        motiveGps.lng > 180
+      ) {
+        return {
+          error: `Motive found truck ${motiveTruck.number}, but Motive did not return a usable current location.`,
+        };
+      }
       return {
         lat: motiveGps.lat,
         lng: motiveGps.lng,
@@ -561,21 +587,24 @@ async function resolvePosition(load, ctx) {
       };
     }
 
-    if (motiveTruck.explicit && !hasMotiveApiKey()) {
-      return { error: "Motive truck numbers require the MOTIVE_API environment variable." };
+    if (motiveTruck.explicit && !hasMotiveOAuthConfig()) {
+      return {
+        error:
+          "Motive truck numbers require the shared Motive OAuth connection. Set MOTIVE_CLIENT_ID, MOTIVE_CLIENT_SECRET, and MOTIVE_REDIRECT_URI, then connect Motive from /admin.",
+      };
     }
     if (ctx.motiveGpsError) {
       return { error: ctx.motiveGpsError };
     }
-    if (ctx.gpsError && !hasMotiveApiKey()) return { error: ctx.gpsError };
-    if (hasMotiveApiKey()) {
+    if (ctx.gpsError && !hasMotiveOAuthConfig()) return { error: ctx.gpsError };
+    if (hasMotiveOAuthConfig()) {
       return {
         error: `Truck ${motiveTruck.number} not found in the connected Samsara or Motive fleet. Check the fleet number and Motive access.`,
       };
     }
     if (ctx.gpsError) return { error: ctx.gpsError };
     return {
-      error: "Truck not found in the connected Samsara account. For a Motive truck, set MOTIVE_API and enter it as Motive: 123.",
+      error: "Truck not found in the connected Samsara account. For a Motive truck, connect the shared Motive fleet from /admin and enter it as Motive: 123.",
     };
   }
 

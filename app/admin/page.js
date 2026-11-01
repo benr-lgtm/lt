@@ -14,6 +14,9 @@ export default function AdminPage() {
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [created, setCreated] = useState(null);
+  const [motive, setMotive] = useState(null);
+  const [motiveBusy, setMotiveBusy] = useState(false);
+  const [motiveMsg, setMotiveMsg] = useState("");
 
   async function load() {
     const r = await fetch("/api/admin").then((x) => x.json());
@@ -21,7 +24,53 @@ export default function AdminPage() {
   }
   useEffect(() => {
     load();
+    loadMotive().catch((error) => setMotiveMsg(error.message));
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("motive") === "connected") {
+      setMotiveMsg("Shared Motive fleet connected.");
+    } else if (params.get("motive") === "error") {
+      setMotiveMsg(params.get("reason") || "Motive connection failed.");
+    }
+    if (params.has("motive")) window.history.replaceState({}, "", window.location.pathname);
   }, []);
+
+  async function loadMotive() {
+    const response = await fetch("/api/admin/motive");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not load Motive connection status.");
+    setMotive(result);
+  }
+
+  async function connectMotive() {
+    setMotiveBusy(true);
+    setMotiveMsg("");
+    try {
+      const response = await fetch("/api/admin/motive/connect", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not start Motive authorization.");
+      window.location.assign(result.authorizationUrl);
+    } catch (error) {
+      setMotiveMsg(error.message);
+      setMotiveBusy(false);
+    }
+  }
+
+  async function disconnectMotive() {
+    if (!window.confirm("Remove TruckOn's stored Motive connection?")) return;
+    setMotiveBusy(true);
+    setMotiveMsg("");
+    try {
+      const response = await fetch("/api/admin/motive", { method: "DELETE" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not disconnect Motive.");
+      setMotiveMsg("TruckOn's stored Motive connection was removed. Revoke the app in Motive to fully withdraw its access.");
+      await loadMotive();
+    } catch (error) {
+      setMotiveMsg(error.message);
+    } finally {
+      setMotiveBusy(false);
+    }
+  }
 
   async function post(payload, okMsg) {
     setBusy(true);
@@ -61,6 +110,47 @@ export default function AdminPage() {
       </div>
 
       {msg ? <p className="paste-result">{msg}</p> : null}
+      {motiveMsg ? <p className="paste-result">{motiveMsg}</p> : null}
+
+      <div className="card">
+        <h2 className="section-title">Shared Motive fleet</h2>
+        <p className="hint">
+          Connect the company fleet once. Its read-only vehicle locations will be available to all TruckOn users.
+        </p>
+        <p className="hint">
+          Removing this connection clears TruckOn&rsquo;s stored tokens. To revoke access completely, also remove the app in Motive.
+        </p>
+        {motive?.migrationRequired ? (
+          <p className="auth-error">
+            Run <code>supabase-motive-oauth-migration.sql</code> in the Supabase SQL Editor first.
+          </p>
+        ) : null}
+        {motive?.configured === false ? (
+          <p className="hint">
+            Configure <code>MOTIVE_CLIENT_ID</code>, <code>MOTIVE_CLIENT_SECRET</code>, and{" "}
+            <code>MOTIVE_REDIRECT_URI</code> in Vercel, then redeploy.
+          </p>
+        ) : null}
+        {motive?.connected ? (
+          <p className="hint">
+            Connected{motive.authorizedAt ? ` on ${new Date(motive.authorizedAt).toLocaleString()}` : ""}.
+          </p>
+        ) : (
+          <p className="hint">Not connected.</p>
+        )}
+        <button
+          className="btn"
+          disabled={motiveBusy || !motive?.configured || motive?.migrationRequired}
+          onClick={connectMotive}
+        >
+          {motiveBusy ? "Please wait…" : motive?.connected ? "Reconnect Motive" : "Connect Motive"}
+        </button>
+        {motive?.connected ? (
+          <button className="btn secondary" disabled={motiveBusy} onClick={disconnectMotive}>
+            Remove connection
+          </button>
+        ) : null}
+      </div>
 
       <div className="card">
         <h2 className="section-title">Today&rsquo;s provider usage</h2>

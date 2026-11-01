@@ -85,12 +85,25 @@ leading `#`, so `#3040` and `3040` both work — but `3040` won't match a vehicl
 named `Truck 3040`. (Live Share links don't need this — they carry their own
 identity.)
 
-Motive fleet numbers are also supported when the instance owner configures the
-Motive API key as the server-only `MOTIVE_API` environment variable. Enter a
-Motive truck as `Motive: 123` to choose that fleet explicitly; an unprefixed
-number checks Samsara first, then Motive. TruckOn reads current locations from
-Motive's `/v1/vehicle_locations` API. Motive's key must have read access to
-vehicle locations. Never use a `NEXT_PUBLIC_` variable for this key.
+Motive fleet numbers use one shared, admin-authorized OAuth connection for all
+TruckOn users. Enter a truck as `Motive: 123` to select Motive explicitly; an
+unprefixed number checks the user's Samsara fleet first, then the shared Motive
+fleet. TruckOn requests current locations through Motive's
+`/v1/vehicle_locations` API. Tokens are encrypted with `ENCRYPTION_KEY` before
+being stored in Supabase.
+
+To configure the shared connection:
+1. In the Motive developer app, register the exact redirect URI
+   `https://truckon.site/api/admin/motive/callback` and enable read-only access
+   to companies and current vehicle locations.
+2. Set `MOTIVE_CLIENT_ID`, `MOTIVE_CLIENT_SECRET`, and
+   `MOTIVE_REDIRECT_URI=https://truckon.site/api/admin/motive/callback` in
+   Vercel. Do not use `NEXT_PUBLIC_` variables for OAuth credentials.
+3. Run [`supabase-motive-oauth-migration.sql`](./supabase-motive-oauth-migration.sql)
+   in the Supabase SQL Editor.
+4. Deploy the app, sign in at `/admin`, and choose **Connect Motive**. A
+   Motive fleet administrator should approve access for the company fleet.
+   The authorization only works if that person can access the intended fleet.
 
 ### 3. Routing providers
 1. Sign up for [OpenRouteService](https://openrouteservice.org/dev/#/signup)
@@ -101,6 +114,9 @@ vehicle locations. Never use a `NEXT_PUBLIC_` variable for this key.
 3. Optionally set `GOOGLE_MAPS_KEY` for the final fallback. Google bills per
    request after its free credit. Both fallback services use car routing and
    cannot guarantee truck restrictions.
+   ORS calls are skipped when the destination is only street/city-level, and a
+   recent ORS error temporarily pauses further ORS attempts in the same running
+   worker while fallbacks continue.
 
 ### 4. Resend (email)
 1. Sign up at [resend.com](https://resend.com) and create an **API key** →
@@ -160,7 +176,9 @@ replace it in Vercel before reconnecting.
    | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
    | `SAMSARA_API_TOKEN` | optional — instance-owner fallback; users add their own in Settings |
    | `SAMSARA_API_TOKENS` | optional — other accounts' tokens, comma-separated |
-   | `MOTIVE_API` | optional — Motive API key for typed Motive truck numbers |
+   | `MOTIVE_CLIENT_ID` | Motive OAuth client ID |
+   | `MOTIVE_CLIENT_SECRET` | Motive OAuth client secret |
+   | `MOTIVE_REDIRECT_URI` | `https://truckon.site/api/admin/motive/callback` (must exactly match Motive developer settings) |
    | `ORS_API_KEY` | OpenRouteService key — supplies the truck-legal route |
    | `MAPBOX_TOKEN` | Mapbox public token — supplies the speed along it |
    | `GOOGLE_MAPS_KEY` | optional — last-resort geocoder for messy addresses |
@@ -172,7 +190,7 @@ replace it in Vercel before reconnecting.
    | `GROQ_MODEL` | optional — defaults to `openai/gpt-oss-20b` |
    | `GROQ_MODEL` | optional — defaults to `openai/gpt-oss-20b` |
    | `NEXT_PUBLIC_APP_URL` | public HTTPS URL for the deployed app |
-   | `ENCRYPTION_KEY` | 64 hex chars — encrypts per-user Samsara tokens |
+   | `ENCRYPTION_KEY` | 64 hex chars — encrypts Samsara and Motive tokens |
    | `CHECK_SECRET` | any long random string; the cron must send `?key=` this |
    | `ADMIN_PASSWORD` / `ADMIN_SECRET` | guard the hidden `/admin` panel |
    | `LATE_GRACE_MIN` | `0` |
