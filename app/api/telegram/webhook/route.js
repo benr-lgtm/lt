@@ -240,7 +240,7 @@ async function handleSourceReply(chatId, text) {
   const isUrl = /^https?:\/\//i.test(source);
   if (!isUrl) {
     source = source.replace(/^truck(?:\s*(?:number|#)\s*)?/i, "").replace(/^#\s*/, "").trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,29}$/.test(source)) return false;
+    if (!/^(?:motive\s*:\s*)?[\p{L}0-9][\p{L}0-9 -]{0,39}$/iu.test(source)) return false;
   } else if (!looksLikeShareUrl(source) || shareLinkProblem(source)) {
     await sendTelegramMessage(chatId, "That link does not look like a supported Samsara or Motive vehicle share URL. Send a truck number or the full share link.");
     return true;
@@ -367,7 +367,7 @@ async function updateAllForUser(chatId, origin) {
   }
   const { data: refreshed, error: refreshError } = await supabase
     .from("loads")
-    .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at")
+    .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at,arrived_at")
     .eq("user_id", profile.id)
     .in("id", [...completedIds])
     .is("deleted_at", null)
@@ -376,7 +376,7 @@ async function updateAllForUser(chatId, origin) {
   for (const load of refreshed || []) {
     const outcome = (result.results || []).find((item) => Number(item.id) === Number(load.id));
     const report = outcome?.status === "error"
-      ? { ...load, status: "error", status_note: outcome.error, eta_display: null }
+      ? { ...load, status: "error", status_note: outcome.error, eta_display: null, miles_left: null }
       : load;
     await sendTelegramLoadReport(chatId, report);
   }

@@ -61,7 +61,6 @@ test("Telegram reports expose tracking errors rather than claiming checking", ()
     position: 0, load_number: "123", kind: "pickup", status: "error",
     status_note: "Could not save tracking result (database error 23514).",
   });
-  assert.match(report, /ETA \(PU\): Unavailable \(Tracking issue\)/);
   assert.match(report, /Tracking issue: Could not save tracking result/);
-  assert.doesNotMatch(report, /\(Checking\)/);
+  assert.doesNotMatch(report, /ETA/);
 });

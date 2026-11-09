@@ -24,6 +24,10 @@ email alerts; **Update all now** runs a one-time check even when Track is off.
 New rows start with Track off. Motion is based on reported vehicle speed or the
 provider's movement state, and old readings are marked stale. Clearing a row
 removes it from the active board and reports while retaining it in History.
+Each saved row also has an **Update** button on the far left for a one-time
+check of that row. Telegram reports are copyable monospace and omit ETAs.
+Arrival times displayed are detected from GPS samples or manual check-in, not
+necessarily the exact time the truck reached the facility.
 
 Run [`supabase-tracking-migration.sql`](./supabase-tracking-migration.sql) in the
 Supabase SQL editor to add the tracking toggle, motion fields, and safe
@@ -90,6 +94,15 @@ Enter a truck as `Motive: 123` to select Motive explicitly; an
 unprefixed number checks the user's Samsara fleet first, then the shared Motive
 fleet. TruckOn requests current locations through Motive's
 `/v1/vehicle_locations` API.
+For a numeric truck number, an exact name wins; otherwise a unique name with a
+letter suffix (such as `707 OO` or `555TT`) can match. If several names match,
+an Update on the board offers a choice; Telegram lists the candidates and asks
+you to choose on the board or enter the full vehicle name.
+
+Run [`supabase-motive-tracking-migration.sql`](./supabase-motive-tracking-migration.sql)
+in Supabase SQL Editor to allow Motive API and share-link tracking sources.
+Without it, the existing database constraint can reject successful Motive
+location checks.
 
 To use a company API key, set **MOTIVE_API** as a secret server-side Vercel
 environment variable and redeploy. Existing `MOTIVE_API` values do not need to
@@ -124,8 +137,9 @@ Alternatively, to configure OAuth (stored tokens are encrypted with
 3. Optionally set `GOOGLE_MAPS_KEY` for the final fallback. Google bills per
    request after its free credit. Both fallback services use car routing and
    cannot guarantee truck restrictions.
-   ORS calls are skipped when the destination is only street/city-level, and a
-   recent ORS error temporarily pauses further ORS attempts in the same running
+   The checker does not calculate mileage when the destination resolves only to
+   a street or area. Correct the street, city, and ZIP if this warning appears.
+   A recent ORS error temporarily pauses further ORS attempts in the same running
    worker while fallbacks continue.
 
 ### 4. Resend (email)
@@ -153,8 +167,8 @@ Alert recipients are configured per account in **Settings**, not by an env var.
 5. In TruckOn **Settings**, choose **Connect Telegram**, open the generated bot
    link, and press **Start**. Use **Update all now** on the website or **Update
    all** in Telegram for one report per load. Reports are formatted in
-   monospace and include motion, ETA status, location, and miles left. Late and
-   arrival changes also send an immediate notification.
+   monospace and include motion, load status, location, and miles left, without
+   an ETA. Late and arrival changes also send an immediate notification.
 
 The app registers the Telegram webhook when you create the connection link. The
 link expires after 15 minutes and can only be used once. If the bot token shown
@@ -166,6 +180,10 @@ replace it in Vercel before reconnecting.
 2. On the board, choose **Paste load with AI**, paste the full dispatch message,
    and select **Read and add stops**. Each unique PU/DEL is added as a separate
    row; when one Load # line lists multiple IDs, only the first is used.
+   Dates without a year use the current year; a time is still required.
+   The importer separates the facility name from the street address, combines
+   a ZIP on the next line, and keeps building, suite, and dock details in stop
+   notes. Review the address before tracking, especially incomplete addresses.
 3. If you send the message directly to the connected Telegram bot, its stops are
    added to your board automatically. If missing, reply to the bot with a truck
    number or Samsara/Motive vehicle share URL to attach it to those stops. Use
@@ -311,12 +329,12 @@ Run `npm test` with Node.js 24 to exercise the Motive provider regression tests.
   link shows **Check failed** — repaste a fresh one.
 - **Address accuracy.** When parsing pasted blocks, the app sends only the street
   + city/state/ZIP to the geocoder (it drops the company name and suite/dock
-  codes), which is what strict geocoders like best. Mapbox resolves the large
-  majority. If some messy addresses miss, set `GEOCODE_PROVIDER=google` with a
-  `GOOGLE_MAPS_KEY` — Google is more forgiving of typos and extra text, and since
-  geocoding runs once per load and is cached, the Google cost is negligible even
-  though routing prefers ORS. With a Google key set, the app also falls back to
-  Google automatically whenever Mapbox can't find an address. For directions,
+  codes), which is what strict geocoders like best. Nominatim, ORS, and optionally
+  Google are tried for an exact match; a result with a different ZIP is rejected.
+  Setting `GOOGLE_MAPS_KEY` enables Google as the final geocoder. Exact matches
+  are cached; approximate and unverified legacy matches are retried. Previously
+  cached exact matches are not reverified until the destination is changed.
+  For directions,
   ORS is primary; Mapbox and then Google are tried if the prior provider fails
   or returns an implausible route. Fallback mileage is non-truck-legal.
 - Want zero maps dependency later? The ETA math is isolated in `lib/maps.js`, so

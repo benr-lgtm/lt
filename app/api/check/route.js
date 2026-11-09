@@ -28,6 +28,7 @@ import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
 import { sendTelegramLoadReport } from "../../../lib/telegramReport";
 import { writeTrackingResult } from "../../../lib/trackingWrite";
+import { findTruckMatches } from "../../../lib/truckLookup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -187,6 +188,7 @@ async function userContext(supabase, userId, loads) {
   const ctx = {
     gpsByName: null,
     gpsError: null,
+    samsaraConfigured: false,
     motiveGpsByName: null,
     motiveGpsError: null,
     profile: null,
@@ -207,6 +209,7 @@ async function userContext(supabase, userId, loads) {
 
   const userToken = decryptSecret(profile?.samsara_token_enc);
   const extra = userToken ? [userToken] : [];
+  ctx.samsaraConfigured = hasSamsaraToken(extra);
   // Kept so the history backfill can reach the same account without decrypting
   // the token a second time per row.
   ctx.tokens = extra;
@@ -252,7 +255,7 @@ async function checkOne(supabase, load, ctx) {
   try {
     // ---- 1. where is the truck? ----
     const pos = await resolvePosition(load, ctx);
-    if (pos.error) return fail(supabase, load, pos.error, out, null, ctx);
+    if (pos.error) return fail(supabase, load, pos.error, { ...out, candidates: pos.candidates }, null, ctx);
 
     // ---- 2. where is it going? ----
     const dest = await resolveDestination(supabase, load, pos);
@@ -322,7 +325,7 @@ async function checkOne(supabase, load, ctx) {
     // the truck's breadcrumbs once and ask whether it was ever parked there.
     let backfill = null;
     if (!arrivedClose && !arrivedDwell && destTrusted) {
-      backfill = await historyBackfill(load, dest, ctx);
+      backfill = await historyBackfill(load, dest, ctx, pos);
     }
 
     if (arrivedClose || arrivedDwell || backfill || departed) {
@@ -545,9 +548,31 @@ async function resolvePosition(load, ctx) {
   if (load.truck_number) {
     const motiveTruck = parseMotiveTruckNumber(load.truck_number);
     const lookupNumber = normalizeTruck(motiveTruck.number);
+    const exactSamsara = !motiveTruck.explicit && ctx.gpsByName?.get(lookupNumber);
+    const exactMotive = ctx.motiveGpsByName?.get(lookupNumber);
+    let matches = findTruckMatches(motiveTruck.number, [
+      ...(!motiveTruck.explicit ? [{ provider: "samsara", vehicles: ctx.gpsByName }] : []),
+      { provider: "motive", vehicles: ctx.motiveGpsByName },
+    ]);
+    // An exact Samsara match retains the existing provider priority.
+    if (exactSamsara) matches = [{ provider: "samsara", gps: exactSamsara }];
+    else if (exactMotive) matches = [{ provider: "motive", gps: exactMotive }];
+    if (matches.length > 1) {
+      return {
+        error: `Multiple trucks match ${motiveTruck.number}: ${matches.map(({ provider, gps }) => `${gps.name} (${provider})`).join(", ")}. Choose on the board or enter the full truck name; use Motive: to select Motive.`,
+        candidates: matches.map(({ provider, gps }) => ({
+          label: `${gps.name} (${provider})`,
+          source: provider === "motive" ? `Motive: ${gps.name}` : String(gps.name),
+        })),
+      };
+    }
+    if (matches.length && !exactSamsara && !exactMotive &&
+        ((!motiveTruck.explicit && ctx.samsaraConfigured && ctx.gpsError) || ctx.motiveGpsError)) {
+      return { error: `Cannot safely match truck ${motiveTruck.number} while a fleet lookup failed. ${ctx.motiveGpsError || ctx.gpsError}` };
+    }
     const samsaraGps = motiveTruck.explicit
       ? null
-      : ctx.gpsByName?.get(lookupNumber);
+      : matches.find((match) => match.provider === "samsara")?.gps;
     if (samsaraGps) {
       return {
         lat: samsaraGps.lat,
@@ -557,11 +582,12 @@ async function resolvePosition(load, ctx) {
         precision: "exact",
         tier: null,
         speed: samsaraGps.speed,
+        vehicleId: samsaraGps.id,
         fixTimeMs: samsaraGps.time ? Date.parse(samsaraGps.time) : null,
       };
     }
 
-    const motiveGps = ctx.motiveGpsByName?.get(lookupNumber);
+    const motiveGps = matches.find((match) => match.provider === "motive")?.gps;
     if (motiveGps) {
       if (
         !Number.isFinite(motiveGps.lat) ||
@@ -634,7 +660,8 @@ async function resolvePosition(load, ctx) {
 // Destination priority: the address the user pasted (geocoded once and cached),
 // then whatever the share link itself carries.
 async function resolveDestination(supabase, load, pos) {
-  if (load.dest_lat != null && load.dest_lng != null) {
+  if (load.dest_lat != null && load.dest_lng != null &&
+      (load.dest_precision === "point" || (!load.destination && !load.dest_precision))) {
     return {
       lat: load.dest_lat,
       lng: load.dest_lng,
@@ -645,7 +672,7 @@ async function resolveDestination(supabase, load, pos) {
   if (load.destination) {
     try {
       const hit = await geocode(load.destination);
-      if (hit) {
+      if (hit && hit.precision === "point") {
         return {
           lat: hit.lat,
           lng: hit.lng,
@@ -653,6 +680,7 @@ async function resolveDestination(supabase, load, pos) {
           spanMiles: hit.spanMiles ?? null,
         };
       }
+      if (hit) return { error: "Destination is only an approximate match. Check the street, city and ZIP; mileage cannot be calculated reliably." };
     } catch (e) {
       return { error: `Couldn't locate the destination address (${e.message})` };
     }
@@ -680,11 +708,10 @@ async function resolveDestination(supabase, load, pos) {
  *
  * In practice that is a handful of calls a day, not one per check.
  */
-async function historyBackfill(load, dest, ctx) {
+async function historyBackfill(load, dest, ctx, pos) {
   if (!load.truck_number || load.arrived_at) return null;
 
-  const gps = ctx.gpsByName?.get(normalizeTruck(load.truck_number));
-  if (!gps?.id) return null;
+  if (pos?.source !== "samsara_api" || !pos.vehicleId) return null;
 
   // Nothing can have been missed until the appointment has come round.
   const tz = tzFromCoords(dest.lat, dest.lng) || FALLBACK_TZ;
@@ -700,7 +727,7 @@ async function historyBackfill(load, dest, ctx) {
   const since = Date.now() - HISTORY_LOOKBACK_MS;
 
   try {
-    return await findStopNear(gps.id, dest, {
+    return await findStopNear(pos.vehicleId, dest, {
       sinceMs: since,
       nearMiles: ARRIVAL_NEAR_MILES,
       dwellMinutes: ARRIVAL_DWELL_MS / 60000,
@@ -860,6 +887,9 @@ async function fail(supabase, load, note, out, pos = null, ctx = null) {
   await writeTrackingResult(supabase, load.id, {
       status: "error",
       status_note: (text.slice(0, 200 - suffix.length) + suffix).slice(0, 200),
+      miles_left: null,
+      eta_iso: null,
+      eta_display: null,
       fail_count: fails,
       blackout_alerted: blackoutAlerted,
       next_check_at:

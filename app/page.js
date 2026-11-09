@@ -166,7 +166,11 @@ function StatusBadge({ row }) {
       <span className="dot" />
       <span className="badge-text">
         <span className="badge-label">{label}</span>
-        {isError ? (
+        {row.status === "arrived" && row.arrived_at ? (
+          <span className="eta-note" title="Detected from GPS samples or check-in; may not be the exact arrival time">
+            Detected {new Date(row.arrived_at).toLocaleString()}
+          </span>
+        ) : isError ? (
           row.status_note ? <span className="eta-note">{row.status_note}</span> : null
         ) : parts ? (
           <>
@@ -246,6 +250,8 @@ export default function Page() {
   const motiveChecksStarted = useRef(new Set());
   const motiveCheckQueue = useRef(new Map());
   const [editVersion, setEditVersion] = useState(0);
+  const [savedEditVersion, setSavedEditVersion] = useState(0);
+  const [truckChoices, setTruckChoices] = useState({});
 
   // Declared before refresh() so every row-building call site can be given the
   // account's cap. An admin can lower it per profile; MAX_ROWS is the default.
@@ -417,6 +423,7 @@ export default function Page() {
     try {
       const res = await fetch("/api/loads", { method: "DELETE" }).then((r) => r.json());
       if (res.error) return setMessage("Clear failed: " + res.error);
+      setSavedEditVersion(editVersionRef.current);
       setRows(Array.from({ length: MIN_ROWS }, (_, i) => blankRow(i)));
       setMessage("All loads cleared.");
     } finally {
@@ -437,7 +444,7 @@ export default function Page() {
       return;
     }
     const futureStops = parsed.filter(
-      (stop) => !appointmentHasPassed({ appointmentAt: stop.deadline, destination: stop.destination })
+      (stop) => !appointmentHasPassed({ appointmentAt: stop.appointmentAt, destination: stop.destination })
     );
     const skippedPast = parsed.length - futureStops.length;
     if (!futureStops.length) {
@@ -453,7 +460,7 @@ export default function Page() {
           ...next[idx],
           name: p.notes || "",
           kind: p.kind,
-          appt_at: p.deadline || "",
+          appt_at: p.appointmentAt || "",
           deadline: p.deadline || "",
           alert_unlinked: false,
           destination: p.destination || "",
@@ -512,6 +519,7 @@ export default function Page() {
         });
         const res = await response.json();
         if (!response.ok || res.error) throw new Error(res.error || "Could not save changes.");
+        setSavedEditVersion(version);
 
         if (res.loads) {
           setRows((current) => applySavedRows(current, res.loads, payload));
@@ -625,13 +633,26 @@ export default function Page() {
     }
   }
 
-  async function updateAllNow() {
+  async function updateAllNow(loadId = null) {
+    const sources = Object.fromEntries(latestRows.current.filter((row) => row.id).map((row) => [row.id, row.source]));
     setUpdating(true);
     setMessage("Updating active loads now…");
     try {
-      const response = await fetch("/api/loads/update", { method: "POST" });
+      const response = await fetch("/api/loads/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loadId == null ? {} : { load_ids: [loadId] }),
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Update could not run.");
+      setTruckChoices((previous) => {
+        const next = { ...previous };
+        for (const item of result.results || []) {
+          if (item.candidates?.length) next[item.id] = { source: sources[item.id], candidates: item.candidates };
+          else delete next[item.id];
+        }
+        return next;
+      });
       await refresh();
       const failures = (result.results || []).filter((item) => item.status === "error");
       const failureSummary = failures
@@ -767,7 +788,7 @@ export default function Page() {
             <button className="btn secondary" onClick={() => setShowAiImport((value) => !value)}>
               {showAiImport ? "Close AI import" : "Paste load with AI"}
             </button>
-            <button className="btn secondary" onClick={updateAllNow} disabled={busy || updating}>
+            <button className="btn secondary" onClick={() => updateAllNow()} disabled={busy || updating || saving || editVersion !== savedEditVersion}>
               {updating ? "Updating…" : "Update all now"}
             </button>
             <button className="btn secondary" onClick={clearAll} disabled={busy}>
@@ -851,6 +872,7 @@ export default function Page() {
           <table ref={tableRef}>
             <thead>
               <tr>
+                <th className="col-row-update">Update</th>
                 <th className="col-clear" />
                 <th className="col-idx">#</th>
                 <th className="col-loc">Last location</th>
@@ -904,6 +926,36 @@ export default function Page() {
                       (rowEmpty(r) ? (i === firstEmpty ? "row-next " : "row-blank ") : "")
                     }
                   >
+                    <td className="col-row-update">
+                      {!rowEmpty(r) ? (
+                        <>
+                          <button
+                            className="btn secondary row-update-btn"
+                            disabled={!r.id || !r.source || !r.deadline || r.status === "arrived" || saving || updating || editVersion !== savedEditVersion}
+                            onClick={() => updateAllNow(r.id)}
+                            aria-label={`Update row ${i + 1}`}
+                            title="Update this load now"
+                          >Update</button>
+                          {truckChoices[r.id]?.source === r.source && truckChoices[r.id]?.candidates?.length ? (
+                            <select
+                              className="row-truck-choice"
+                              aria-label={`Choose truck for row ${i + 1}`}
+                              value=""
+                              onChange={(event) => {
+                                if (!event.target.value) return;
+                                update(i, "source", event.target.value);
+                                setMessage("Truck selected. After saving, select Update to check this load.");
+                              }}
+                            >
+                              <option value="">Choose truck...</option>
+                              {truckChoices[r.id].candidates.map((candidate) => (
+                                <option key={candidate.source} value={candidate.source}>{candidate.label}</option>
+                              ))}
+                            </select>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </td>
                     <td className="col-clear">
                       {!rowEmpty(r) ? (
                         <button className="clear-btn" title="Clear this row" onClick={() => clearRow(i)}>

@@ -321,6 +321,9 @@ tbody tr:hover { background: var(--panel-3); }
 
 .col-idx { width: 40px; color: var(--muted); font-size: 13px; text-align: center; }
 .col-clear { width: 42px; text-align: center; padding-left: 6px; padding-right: 0; }
+.col-row-update { width: 70px; text-align: center; }
+.row-update-btn { padding: 6px 8px; font-size: 12px; }
+.row-truck-choice { display: block; max-width: 140px; margin-top: 4px; }
 /* Clear button was near-invisible at rest, so it read as decoration rather
    than a control. Now it always shows as a real button. */
 .clear-btn {

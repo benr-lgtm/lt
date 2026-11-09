@@ -91,7 +91,7 @@ export async function POST(req) {
     } else if (updated.length) {
       const { data: fresh, error: freshError } = await supabase
         .from("loads")
-        .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at")
+        .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at,arrived_at")
         .eq("user_id", user.id)
         .in("id", updated.map((load) => load.id))
         .is("deleted_at", null)
@@ -102,7 +102,7 @@ export async function POST(req) {
         for (const load of fresh || []) {
           const outcome = (result.results || []).find((item) => Number(item.id) === Number(load.id));
           const report = outcome?.status === "error"
-            ? { ...load, status: "error", status_note: outcome.error, eta_display: null }
+            ? { ...load, status: "error", status_note: outcome.error, eta_display: null, miles_left: null }
             : load;
           await sendTelegramLoadReport(profile.telegram_chat_id, report);
           telegramSent++;
