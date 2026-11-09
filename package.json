@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --experimental-test-module-mocks --test"
   },
   "dependencies": {
     "@supabase/ssr": "0.5.2",

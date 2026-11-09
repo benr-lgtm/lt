@@ -72,6 +72,21 @@ export default function AdminPage() {
     }
   }
 
+  async function testMotive() {
+    setMotiveBusy(true);
+    setMotiveMsg("");
+    try {
+      const response = await fetch("/api/admin/motive", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not verify Motive access.");
+      setMotiveMsg("Motive vehicle-location access verified.");
+    } catch (error) {
+      setMotiveMsg(error.message);
+    } finally {
+      setMotiveBusy(false);
+    }
+  }
+
   async function post(payload, okMsg) {
     setBusy(true);
     setMsg("");
@@ -117,39 +132,59 @@ export default function AdminPage() {
         <p className="hint">
           Connect the company fleet once. Its read-only vehicle locations will be available to all TruckOn users.
         </p>
-        <p className="hint">
-          Removing this connection clears TruckOn&rsquo;s stored tokens. To revoke access completely, also remove the app in Motive.
-        </p>
-        {motive?.migrationRequired ? (
-          <p className="auth-error">
-            Run <code>supabase-motive-oauth-migration.sql</code> in the Supabase SQL Editor first.
-          </p>
-        ) : null}
-        {motive?.configured === false ? (
-          <p className="hint">
-            Configure <code>MOTIVE_CLIENT_ID</code>, <code>MOTIVE_CLIENT_SECRET</code>, and{" "}
-            <code>MOTIVE_REDIRECT_URI</code> in Vercel, then redeploy.
-          </p>
-        ) : null}
-        {motive?.connected ? (
-          <p className="hint">
-            Connected{motive.authorizedAt ? ` on ${new Date(motive.authorizedAt).toLocaleString()}` : ""}.
-          </p>
+        {motive?.method === "api_key" ? (
+          <>
+            <p className="hint">
+              A Motive API key is configured in the server environment and takes precedence over OAuth.
+              Verify it has permission to read vehicle locations. Remove or replace it in Vercel and redeploy to change it.
+            </p>
+            <button className="btn" disabled={motiveBusy} onClick={testMotive}>
+              {motiveBusy ? "Please wait…" : "Test Motive access"}
+            </button>
+          </>
         ) : (
-          <p className="hint">Not connected.</p>
+          <>
+            <p className="hint">
+              Use a server-side MOTIVE_API or MOTIVE_API_KEY in Vercel, or connect using OAuth below.
+              Removing an OAuth connection clears TruckOn&rsquo;s stored tokens. To revoke access completely, also remove the app in Motive.
+            </p>
+            {motive?.migrationRequired ? (
+              <p className="auth-error">
+                Run <code>supabase-motive-oauth-migration.sql</code> in the Supabase SQL Editor first.
+              </p>
+            ) : null}
+            {motive?.configured === false ? (
+              <p className="hint">
+                Configure <code>MOTIVE_CLIENT_ID</code>, <code>MOTIVE_CLIENT_SECRET</code>, and{" "}
+                <code>MOTIVE_REDIRECT_URI</code> in Vercel, then redeploy.
+              </p>
+            ) : null}
+            {motive?.connected ? (
+              <p className="hint">
+                Connected{motive.authorizedAt ? ` on ${new Date(motive.authorizedAt).toLocaleString()}` : ""}.
+              </p>
+            ) : (
+              <p className="hint">Not connected.</p>
+            )}
+            <button
+              className="btn"
+              disabled={motiveBusy || !motive?.configured || motive?.migrationRequired}
+              onClick={connectMotive}
+            >
+              {motiveBusy ? "Please wait…" : motive?.connected ? "Reconnect Motive" : "Connect Motive"}
+            </button>
+            {motive?.connected ? (
+              <button className="btn secondary" disabled={motiveBusy} onClick={disconnectMotive}>
+                Remove connection
+              </button>
+            ) : null}
+            {motive?.connected ? (
+              <button className="btn secondary" disabled={motiveBusy} onClick={testMotive}>
+                Test Motive access
+              </button>
+            ) : null}
+          </>
         )}
-        <button
-          className="btn"
-          disabled={motiveBusy || !motive?.configured || motive?.migrationRequired}
-          onClick={connectMotive}
-        >
-          {motiveBusy ? "Please wait…" : motive?.connected ? "Reconnect Motive" : "Connect Motive"}
-        </button>
-        {motive?.connected ? (
-          <button className="btn secondary" disabled={motiveBusy} onClick={disconnectMotive}>
-            Remove connection
-          </button>
-        ) : null}
       </div>
 
       <div className="card">

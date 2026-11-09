@@ -12,7 +12,7 @@ import { fetchShareLocation } from "../../../lib/samsaraShare";
 import { fetchMotiveLocation } from "../../../lib/motiveShare";
 import {
   getMotiveVehicleGpsByName,
-  hasMotiveOAuthConfig,
+  hasMotiveConfig,
   parseMotiveTruckNumber,
 } from "../../../lib/motiveApi";
 import { parseMotiveUrl } from "../../../lib/shareLink";
@@ -219,7 +219,7 @@ async function userContext(supabase, userId, loads) {
     }
   }
   const needsMotiveLookup =
-    hasMotiveOAuthConfig() &&
+    hasMotiveConfig() &&
     loads.some((load) => {
       if (!load.truck_number) return false;
       const motiveTruck = parseMotiveTruckNumber(load.truck_number);
@@ -237,7 +237,7 @@ async function userContext(supabase, userId, loads) {
   }
   if (!hasSamsaraToken(extra)) {
     ctx.gpsError =
-      "No Samsara API token on this account. Connect the shared Motive fleet from /admin for Motive truck numbers, or use a Live Share link.";
+      "No Samsara API token on this account. Configure the shared Motive fleet for Motive truck numbers, or use a Live Share link.";
   }
   return ctx;
 }
@@ -587,24 +587,24 @@ async function resolvePosition(load, ctx) {
       };
     }
 
-    if (motiveTruck.explicit && !hasMotiveOAuthConfig()) {
+    if (motiveTruck.explicit && !hasMotiveConfig()) {
       return {
         error:
-          "Motive truck numbers require the shared Motive OAuth connection. Set MOTIVE_CLIENT_ID, MOTIVE_CLIENT_SECRET, and MOTIVE_REDIRECT_URI, then connect Motive from /admin.",
+          "Motive truck numbers require a shared Motive fleet. Set MOTIVE_API or MOTIVE_API_KEY in Vercel or connect Motive with OAuth from /admin.",
       };
     }
     if (ctx.motiveGpsError) {
       return { error: ctx.motiveGpsError };
     }
-    if (ctx.gpsError && !hasMotiveOAuthConfig()) return { error: ctx.gpsError };
-    if (hasMotiveOAuthConfig()) {
+    if (ctx.gpsError && !hasMotiveConfig()) return { error: ctx.gpsError };
+    if (hasMotiveConfig()) {
       return {
         error: `Truck ${motiveTruck.number} not found in the connected Samsara or Motive fleet. Check the fleet number and Motive access.`,
       };
     }
     if (ctx.gpsError) return { error: ctx.gpsError };
     return {
-      error: "Truck not found in the connected Samsara account. For a Motive truck, connect the shared Motive fleet from /admin and enter it as Motive: 123.",
+      error: "Truck not found in the connected Samsara account. For a Motive truck, configure the shared Motive fleet and enter it as Motive: 123.",
     };
   }
 

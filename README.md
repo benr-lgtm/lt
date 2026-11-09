@@ -2,14 +2,14 @@
 
 A single-page app for dispatchers. For each load you enter an appointment and **one of two tracking sources**:
 
-- a **truck #** — for trucks on a Samsara account you have an API token for, or
+- a **truck #** — for trucks on a connected Samsara or shared Motive fleet, or
 - a public **Samsara or Motive vehicle share link** — for trucks you *don't* have API access to.
 
 The app tracks each load's ETA and **emails you if it slips past the deadline**.
 
 - **Frontend + API:** Next.js on **Vercel**
 - **Storage:** **Supabase** (Postgres)
-- **Truck location (truck #):** **Samsara API** (read-only, one or more accounts)
+- **Truck location (truck #):** **Samsara API** or shared **Motive API** (read-only)
 - **Truck location (Live Share):** Samsara's public share endpoint, read server-side
 - **Motive share links:** public Motive vehicle-share locations are read server-side
 - **Route + ETA:** **OpenRouteService** `driving-hgv`, with dry-van
@@ -85,14 +85,24 @@ leading `#`, so `#3040` and `3040` both work — but `3040` won't match a vehicl
 named `Truck 3040`. (Live Share links don't need this — they carry their own
 identity.)
 
-Motive fleet numbers use one shared, admin-authorized OAuth connection for all
-TruckOn users. Enter a truck as `Motive: 123` to select Motive explicitly; an
+Motive fleet numbers use one shared company connection for all TruckOn users.
+Enter a truck as `Motive: 123` to select Motive explicitly; an
 unprefixed number checks the user's Samsara fleet first, then the shared Motive
 fleet. TruckOn requests current locations through Motive's
-`/v1/vehicle_locations` API. Tokens are encrypted with `ENCRYPTION_KEY` before
-being stored in Supabase.
+`/v1/vehicle_locations` API.
 
-To configure the shared connection:
+To use a company API key, set **MOTIVE_API** as a secret server-side Vercel
+environment variable and redeploy. Existing `MOTIVE_API` values do not need to
+be renamed. `MOTIVE_API_KEY` is also supported and takes precedence if both are
+set. Give the key read access to current vehicle
+locations. In `/admin`, choose **Test Motive access** to verify the key and
+permissions; a configured key alone does not mean it has been verified.
+The key is shared with all TruckOn users and takes precedence over OAuth, even
+if it is invalid. Remove or replace it in Vercel and redeploy to switch to OAuth.
+Do not paste the key into chat or put it in a `NEXT_PUBLIC_` variable.
+
+Alternatively, to configure OAuth (stored tokens are encrypted with
+`ENCRYPTION_KEY`):
 1. In the Motive developer app, register the exact redirect URI
    `https://truckon.site/api/admin/motive/callback` and enable read-only access
    to companies and current vehicle locations.
@@ -176,9 +186,11 @@ replace it in Vercel before reconnecting.
    | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key |
    | `SAMSARA_API_TOKEN` | optional — instance-owner fallback; users add their own in Settings |
    | `SAMSARA_API_TOKENS` | optional — other accounts' tokens, comma-separated |
-   | `MOTIVE_CLIENT_ID` | Motive OAuth client ID |
-   | `MOTIVE_CLIENT_SECRET` | Motive OAuth client secret |
-   | `MOTIVE_REDIRECT_URI` | `https://truckon.site/api/admin/motive/callback` (must exactly match Motive developer settings) |
+   | `MOTIVE_API` | optional — shared company Motive API key, server-only; takes precedence over OAuth |
+   | `MOTIVE_API_KEY` | optional — alternative API key variable; takes precedence over `MOTIVE_API` |
+   | `MOTIVE_CLIENT_ID` | optional — Motive OAuth client ID |
+   | `MOTIVE_CLIENT_SECRET` | optional — Motive OAuth client secret |
+   | `MOTIVE_REDIRECT_URI` | optional — `https://truckon.site/api/admin/motive/callback` (must exactly match Motive developer settings) |
    | `ORS_API_KEY` | OpenRouteService key — supplies the truck-legal route |
    | `MAPBOX_TOKEN` | Mapbox public token — supplies the speed along it |
    | `GOOGLE_MAPS_KEY` | optional — last-resort geocoder for messy addresses |
@@ -280,6 +292,7 @@ cp .env.example .env.local   # fill in the values
 npm run dev
 ```
 Open http://localhost:3000.
+Run `npm test` with Node.js 24 to exercise the Motive provider regression tests.
 
 ## Notes & limits
 - You get **one** email when a load flips to Late. If its ETA recovers to on-time
