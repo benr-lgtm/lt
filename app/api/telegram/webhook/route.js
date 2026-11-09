@@ -374,7 +374,11 @@ async function updateAllForUser(chatId, origin) {
     .order("position", { ascending: true });
   if (refreshError) throw refreshError;
   for (const load of refreshed || []) {
-    await sendTelegramLoadReport(chatId, load);
+    const outcome = (result.results || []).find((item) => Number(item.id) === Number(load.id));
+    const report = outcome?.status === "error"
+      ? { ...load, status: "error", status_note: outcome.error, eta_display: null }
+      : load;
+    await sendTelegramLoadReport(chatId, report);
   }
   if (result.deferred) {
     await sendTelegramMessage(

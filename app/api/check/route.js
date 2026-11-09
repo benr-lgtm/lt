@@ -27,6 +27,7 @@ import { nextCheckAt, slackMsFrom, graceMs } from "../../../lib/scheduler";
 import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
 import { sendTelegramLoadReport } from "../../../lib/telegramReport";
+import { writeTrackingResult } from "../../../lib/trackingWrite";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -150,7 +151,7 @@ export async function GET(req) {
           // guard one unlucky row aborts the entire sweep, so every remaining
           // load goes unchecked — and it would do so again on every tick,
           // because the same row is always first in the due queue.
-          results.push({ id: load.id, position: load.position, status: "error", error: e.message });
+          results.push({ id: load.id, position: load.position, load_number: load.load_number || null, status: "error", error: e.message, persisted: false });
         }
       }
     }
@@ -722,9 +723,7 @@ function checkinDueAt(load, tz) {
 
 async function finish(supabase, load, { patch, pos, ...rest }) {
   const motion = motionForPosition(load, pos);
-  await supabase
-    .from("loads")
-    .update({
+  await writeTrackingResult(supabase, load.id, {
       // Any successful check ends the failure streak. Without this the counter
       // would accumulate across unrelated outages and eventually make a healthy
       // row give up over failures it had already recovered from.
@@ -743,9 +742,7 @@ async function finish(supabase, load, { patch, pos, ...rest }) {
       motion: motion.motion,
       motion_updated_at: motion.updatedAt,
       updated_at: new Date().toISOString(),
-    })
-    .eq("id", load.id)
-    .is("deleted_at", null);
+    });
   return rest;
 }
 
@@ -860,9 +857,7 @@ async function fail(supabase, load, note, out, pos = null, ctx = null) {
     }
   }
 
-  await supabase
-    .from("loads")
-    .update({
+  await writeTrackingResult(supabase, load.id, {
       status: "error",
       status_note: (text.slice(0, 200 - suffix.length) + suffix).slice(0, 200),
       fail_count: fails,
@@ -875,9 +870,7 @@ async function fail(supabase, load, note, out, pos = null, ctx = null) {
       last_lng: pos?.lng ?? load.last_lng,
       last_place: pos?.formatted ?? load.last_place,
       updated_at: new Date().toISOString(),
-    })
-    .eq("id", load.id)
-    .is("deleted_at", null);
+    });
   return { ...out, status: "error", error: note, gaveUp: giveUp };
 }
 
