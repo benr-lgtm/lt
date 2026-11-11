@@ -661,7 +661,7 @@ async function resolvePosition(load, ctx) {
 // then whatever the share link itself carries.
 async function resolveDestination(supabase, load, pos) {
   if (load.dest_lat != null && load.dest_lng != null &&
-      (load.dest_precision === "point" || (!load.destination && !load.dest_precision))) {
+      (load.dest_precision === "point" || load.dest_precision === "street" || (!load.destination && !load.dest_precision))) {
     return {
       lat: load.dest_lat,
       lng: load.dest_lng,
@@ -672,7 +672,7 @@ async function resolveDestination(supabase, load, pos) {
   if (load.destination) {
     try {
       const hit = await geocode(load.destination);
-      if (hit && hit.precision === "point") {
+      if (hit && (hit.precision === "point" || hit.precision === "street")) {
         return {
           lat: hit.lat,
           lng: hit.lng,
