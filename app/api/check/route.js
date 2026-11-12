@@ -26,9 +26,10 @@ import {
 import { nextCheckAt, slackMsFrom, graceMs } from "../../../lib/scheduler";
 import { chargeForRow } from "../../../lib/billing";
 import { decryptSecret } from "../../../lib/crypto";
-import { sendTelegramLoadReport } from "../../../lib/telegramReport";
+import { deliverTelegramReport } from "../../../lib/telegramDelivery";
 import { writeTrackingResult } from "../../../lib/trackingWrite";
 import { findTruckMatches } from "../../../lib/truckLookup";
+import { acquireCheckLease, releaseCheckLease } from "../../../lib/checkLease";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,12 +104,12 @@ export async function GET(req) {
     let query = supabase
       .from("loads")
       .select("*")
-      .is("deleted_at", null)
-      .not("next_check_at", "is", null);
+      .is("deleted_at", null);
     if (requestedIds) {
       query = query.in("id", requestedIds).limit(requestedIds.length);
     } else {
       query = query
+        .not("next_check_at", "is", null)
         .eq("tracking_enabled", true)
         .lte("next_check_at", nowIso)
         .order("next_check_at", { ascending: true })
@@ -144,8 +145,19 @@ export async function GET(req) {
           deferred = (due?.length || 0) - results.length;
           break outer;
         }
+        let lease = null;
         try {
-          results.push(await checkOne(supabase, load, ctx));
+          lease = await acquireCheckLease(supabase, load.id);
+          if (!lease) {
+            results.push({ id: load.id, position: load.position, load_number: load.load_number || null,
+              status: "deferred", error: "Another update is already checking this load. Check its status shortly." });
+            continue;
+          }
+          if (lease.load.status === "arrived") {
+            results.push({ id: load.id, position: load.position, load_number: load.load_number || null, status: "arrived" });
+            continue;
+          }
+          results.push(await checkOne(supabase, lease.load, ctx));
         } catch (e) {
           // checkOne handles its own failures, but the recovery path itself can
           // throw (a database hiccup while writing the error). Without this
@@ -153,6 +165,18 @@ export async function GET(req) {
           // load goes unchecked — and it would do so again on every tick,
           // because the same row is always first in the due queue.
           results.push({ id: load.id, position: load.position, load_number: load.load_number || null, status: "error", error: e.message, persisted: false });
+        } finally {
+          if (lease) {
+            try {
+              await releaseCheckLease(supabase, load.id, lease.token);
+            } catch (e) {
+              const last = results[results.length - 1];
+              if (last?.id === load.id) {
+                last.status = "error";
+                last.error = `${e.message} The load may remain locked briefly; check its status before retrying.`;
+              }
+            }
+          }
         }
       }
     }
@@ -213,11 +237,14 @@ async function userContext(supabase, userId, loads) {
   // Kept so the history backfill can reach the same account without decrypting
   // the token a second time per row.
   ctx.tokens = extra;
-  if (hasSamsaraToken(extra)) {
+  const needsSamsaraLookup = loads.some((load) =>
+    load.truck_number && !parseMotiveTruckNumber(load.truck_number).explicit
+  );
+  if (needsSamsaraLookup && ctx.samsaraConfigured) {
     try {
       const errs = [];
       ctx.gpsByName = await getVehicleGpsByName(errs, extra);
-      if (errs.length && ctx.gpsByName.size === 0) ctx.gpsError = errs[0];
+      if (errs.length) ctx.gpsError = errs[0];
     } catch (e) {
       ctx.gpsError = e.message;
     }
@@ -236,7 +263,9 @@ async function userContext(supabase, userId, loads) {
     try {
       ctx.motiveGpsByName = await getMotiveVehicleGpsByName();
     } catch (e) {
-      ctx.motiveGpsError = e.message;
+      ctx.motiveGpsError = e.name === "TimeoutError" || e.name === "AbortError"
+        ? "Motive fleet lookup timed out. Try updating this load again."
+        : e.message;
     }
   }
   if (!hasSamsaraToken(extra)) {
@@ -624,7 +653,7 @@ async function resolvePosition(load, ctx) {
     if (ctx.motiveGpsError) {
       return { error: ctx.motiveGpsError };
     }
-    if (ctx.gpsError && !hasMotiveConfig()) return { error: ctx.gpsError };
+    if (ctx.gpsError && !motiveTruck.explicit && (ctx.samsaraConfigured || !hasMotiveConfig())) return { error: ctx.gpsError };
     if (hasMotiveConfig()) {
       return {
         error: `Truck ${motiveTruck.number} not found in the connected Samsara or Motive fleet. Check the fleet number and Motive access.`,
@@ -638,9 +667,17 @@ async function resolvePosition(load, ctx) {
 
   if (load.samsara_url) {
     const motive = parseMotiveUrl(load.samsara_url);
-    const share = motive
-      ? await fetchMotiveLocation(load.samsara_url)
-      : await fetchShareLocation(load.samsara_url);
+    let share;
+    try {
+      share = motive
+        ? await fetchMotiveLocation(load.samsara_url)
+        : await fetchShareLocation(load.samsara_url);
+    } catch (e) {
+      if (e.name === "TimeoutError" || e.name === "AbortError") {
+        return { error: `${motive ? "Motive" : "Samsara"} share location timed out. Try updating this load again.` };
+      }
+      throw e;
+    }
     return {
       lat: share.lat,
       lng: share.lng,
@@ -1015,28 +1052,8 @@ async function sweepTelegramNotifications(supabase) {
         profiles.set(load.user_id, profile);
       }
       if (!profile?.telegram_chat_id) continue;
-      const eventStatus = event ? load.telegram_pending_status : null;
-      const status = eventStatus || load.status;
-      await sendTelegramLoadReport(profile.telegram_chat_id, load, status);
-
-      const now = new Date();
-      const patch = { telegram_last_sent_at: now.toISOString() };
-      if (eventStatus === "late") patch.telegram_late_notified_at = now.toISOString();
-      if (eventStatus === "arrived") {
-        patch.telegram_arrived_notified_at = now.toISOString();
-        patch.telegram_next_at = null;
-      }
-      if (eventStatus) patch.telegram_pending_status = null;
-
-      let update = supabase
-        .from("loads")
-        .update(patch)
-        .eq("id", load.id)
-        .is("deleted_at", null);
-      if (eventStatus) update = update.eq("telegram_pending_status", eventStatus);
-      const { error } = await update;
-      if (error) throw error;
-      sent++;
+      const delivery = await deliverTelegramReport(supabase, profile.telegram_chat_id, load.id, { pendingOnly: event, userId: load.user_id });
+      if (delivery.sent) sent++;
     } catch (e) {
       failed++;
       console.warn(`Telegram notification failed for load ${load.id}:`, e.message);

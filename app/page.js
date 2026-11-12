@@ -20,6 +20,7 @@ import {
 } from "../lib/rows";
 import { parseMotiveUrl, shareLinkProblem } from "../lib/shareLink";
 import { appointmentHasPassed } from "../lib/dispatchTime";
+import { updateRowsOnce } from "../lib/manualUpdates";
 
 // "America/Chicago" -> "CDT". Null until the destination has been geocoded,
 // since the zone is derived from its coordinates.
@@ -635,26 +636,40 @@ export default function Page() {
 
   async function updateAllNow(loadId = null) {
     const sources = Object.fromEntries(latestRows.current.filter((row) => row.id).map((row) => [row.id, row.source]));
+    const targets = latestRows.current.filter((row) =>
+      row.id && row.source && row.status !== "arrived" && (loadId == null || row.id === loadId)
+    );
     setUpdating(true);
     setMessage("Updating active loads now…");
     try {
-      const response = await fetch("/api/loads/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(loadId == null ? {} : { load_ids: [loadId] }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Update could not run.");
+      const outcomes = await updateRowsOnce(targets, async (id) => {
+        const response = await fetch("/api/loads/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ load_ids: [id] }),
+          signal: AbortSignal.timeout(70000),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Update could not run.");
+        return result;
+      }, (done, total) => setMessage(`Updating loads: ${done} of ${total} processed…`));
+      const results = outcomes.flatMap(({ result }) => result?.results || []);
       setTruckChoices((previous) => {
         const next = { ...previous };
-        for (const item of result.results || []) {
+        for (const item of results) {
           if (item.candidates?.length) next[item.id] = { source: sources[item.id], candidates: item.candidates };
           else delete next[item.id];
         }
         return next;
       });
       await refresh();
-      const failures = (result.results || []).filter((item) => item.status === "error");
+      const failures = results.filter((item) => item.status === "error" || item.status === "deferred");
+      for (const { row, result, error } of outcomes) {
+        if (error || (result?.deferred && !(result?.results || []).some((item) => item.status === "deferred")) ||
+            (!result?.checked && !result?.results?.length)) {
+          failures.push({ position: row.position, load_number: row.load_number, error: error || result?.message || "Not checked; please update this row again." });
+        }
+      }
       const failureSummary = failures
         .map((item) => {
           const label = item.position == null ? "Load" : `Row ${item.position + 1}`;
@@ -662,13 +677,15 @@ export default function Page() {
           return `${label}${loadNumber}: ${item.error || "check failed"}`;
         })
         .join(" | ");
-      setMessage(
+      const telegramSent = outcomes.reduce((sum, item) => sum + (item.result?.telegramSent || 0), 0);
+      const telegramErrors = [...new Set(outcomes.map((item) => item.result?.telegramError).filter(Boolean))];
+      setMessage([
         failures.length
-          ? `${failures.length} of ${result.checked} load${result.checked === 1 ? "" : "s"} failed: ${failureSummary}`
-          : result.checked
-          ? `Updated ${result.checked} load${result.checked === 1 ? "" : "s"}${result.deferred ? `; ${result.deferred} will continue in the background` : ""}.${result.telegramSent ? ` Sent Telegram report for ${result.telegramSent} stop${result.telegramSent === 1 ? "" : "s"}.` : " No Telegram report was sent."}${result.telegramError ? ` Telegram error: ${result.telegramError}` : ""}`
-          : result.message || "No active loads need an update."
-      );
+          ? `${failures.length} of ${targets.length} loads failed or were not confirmed: ${failureSummary}`
+          : targets.length ? `Updated ${targets.length} load${targets.length === 1 ? "" : "s"}.` : "No active loads need an update.",
+        telegramSent ? `Sent ${telegramSent} Telegram report${telegramSent === 1 ? "" : "s"}.` : "",
+        telegramErrors.length ? `Telegram error: ${telegramErrors.join("; ")}` : "",
+      ].filter(Boolean).join(" "));
     } catch (e) {
       setMessage(`Update failed: ${e.message}`);
     } finally {

@@ -89,6 +89,30 @@ test("API key verification checks only one page and reports permission failures"
   await assert.rejects(getMotiveVehicleGpsByName(), /invalid vehicle-location response/);
 });
 
+test("Motive fleet pagination uses one shared deadline and rejects incomplete results", async () => {
+  process.env.MOTIVE_API_KEY = "test-key";
+  const controller = new AbortController();
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = () => controller.signal;
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(options.signal, controller.signal);
+    if (calls === 1) return Response.json({
+      vehicles: [{ vehicle: { number: "1", current_location: { lat: 41, lon: -87 } } }],
+      pagination: { total: 2, per_page: 1 },
+    });
+    controller.abort(new DOMException("Timed out", "TimeoutError"));
+    throw controller.signal.reason;
+  };
+  try {
+    await assert.rejects(getMotiveVehicleGpsByName(), { name: "TimeoutError" });
+    assert.equal(calls, 2);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+});
+
 test("existing MOTIVE_API variable authenticates without OAuth", async () => {
   delete process.env.MOTIVE_API_KEY;
   process.env.MOTIVE_API = "existing-key";
@@ -138,4 +162,26 @@ test("Motive share requires real coordinates and preserves valid locations", asy
   assert.equal(position.lng, -87.3);
   assert.equal(position.motion, "Rolling");
   assert.equal(position.formatted, "Chicago, IL");
+});
+
+test("Motive share key fallback uses one deadline", async () => {
+  process.env.MOTIVE_WEB_SHARE_API_KEY = "test-key";
+  const originalTimeout = AbortSignal.timeout;
+  const controller = new AbortController();
+  AbortSignal.timeout = () => controller.signal;
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(options.signal, controller.signal);
+    if (calls === 1) return new Response(null, { status: 401 });
+    controller.abort(new DOMException("Timed out", "TimeoutError"));
+    throw controller.signal.reason;
+  };
+  try {
+    await assert.rejects(fetchMotiveLocation("https://tracking.gomotive.com/share/v/11111111-2222-3333-4444-555555555555"), { name: "TimeoutError" });
+    assert.equal(calls, 2);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+    delete process.env.MOTIVE_WEB_SHARE_API_KEY;
+  }
 });

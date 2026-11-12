@@ -1,12 +1,13 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { getSupabase } from "../../../../lib/supabase";
 import { configureTelegramWebhook, sendTelegramMessage, telegramWebhookSecret } from "../../../../lib/telegram";
-import { sendTelegramLoadReport } from "../../../../lib/telegramReport";
+import { deliverTelegramReport } from "../../../../lib/telegramDelivery";
 import { parseLoadMessage } from "../../../../lib/groq";
 import { looksLikeShareUrl } from "../../../../lib/shareLink";
 import { shareLinkProblem } from "../../../../lib/shareLink";
 import { appointmentHasPassed } from "../../../../lib/dispatchTime";
 import { MAX_ROWS } from "../../../../lib/rows";
+import { TELEGRAM_GROUP_SIZE, groupTelegramLoads, runTelegramBatch, telegramGroupKeyboard } from "../../../../lib/telegramBatches";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,6 +39,11 @@ export async function POST(req) {
 
     if (/^(?:update all|update all now|\/updateall|\/update)(?:@\w+)?$/i.test(text)) {
       await updateAllForUser(chatId, new URL(req.url).origin);
+      return Response.json({ ok: true });
+    }
+    const group = text.match(/^update group\s+(\d{1,2})$/i);
+    if (group) {
+      await updateAllForUser(chatId, new URL(req.url).origin, Number(group[1]));
       return Response.json({ ok: true });
     }
 
@@ -306,7 +312,8 @@ async function handleSourceReply(chatId, text) {
   return true;
 }
 
-async function updateAllForUser(chatId, origin) {
+async function updateAllForUser(chatId, origin, groupNumber = null) {
+  const deadline = Date.now() + 38000;
   const supabase = getSupabase();
   const { data: profile, error } = await supabase
     .from("profiles")
@@ -321,72 +328,103 @@ async function updateAllForUser(chatId, origin) {
 
   const { data: loads, error: loadsError } = await supabase
     .from("loads")
-    .select("id,deadline,truck_number,samsara_url,status")
+    .select("id,position,load_number,deadline,truck_number,samsara_url,status")
     .eq("user_id", profile.id)
-    .is("deleted_at", null);
-  if (loadsError) throw loadsError;
-  const ids = (loads || [])
-    .filter((load) => load.status !== "arrived" && load.deadline && (load.truck_number || load.samsara_url))
-    .map((load) => Number(load.id))
-    .filter((id) => Number.isSafeInteger(id) && id > 0);
-  if (!ids.length) {
-    await sendTelegramMessage(chatId, "No active loads with a truck number or supported share link need an update.", { reply_markup: updateAllKeyboard() });
-    return;
-  }
-
-  await sendTelegramMessage(chatId, `Checking ${ids.length} active load${ids.length === 1 ? "" : "s"} now…`, { reply_markup: updateAllKeyboard() });
-  const now = new Date().toISOString();
-  const { error: queueError } = await supabase
-    .from("loads")
-    .update({ next_check_at: now })
-    .eq("user_id", profile.id)
-    .in("id", ids);
-  if (queueError) throw queueError;
-
-  const checkUrl = new URL("/api/check", origin);
-  if (process.env.CHECK_SECRET) checkUrl.searchParams.set("key", process.env.CHECK_SECRET);
-  checkUrl.searchParams.set("load_ids", ids.join(","));
-  const response = await fetch(checkUrl, { cache: "no-store", signal: AbortSignal.timeout(55000) });
-  if (!response.ok) {
-    const result = await response.json().catch(() => ({}));
-    await sendTelegramMessage(chatId, `Update could not run: ${result.error || `HTTP ${response.status}`}.`, { reply_markup: updateAllKeyboard() });
-    return;
-  }
-
-  const result = await response.json().catch(() => ({}));
-  const completedIds = new Set((result.results || []).map((item) => Number(item.id)));
-  if (!completedIds.size) {
-    if (result.deferred) {
-      await sendTelegramMessage(
-        chatId,
-        `${result.deferred} load${result.deferred === 1 ? " is" : "s are"} still waiting for an update. Send Update all again shortly.`,
-        { reply_markup: updateAllKeyboard() }
-      );
-    }
-    return;
-  }
-  const { data: refreshed, error: refreshError } = await supabase
-    .from("loads")
-    .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at,arrived_at,dest_precision")
-    .eq("user_id", profile.id)
-    .in("id", [...completedIds])
     .is("deleted_at", null)
-    .order("position", { ascending: true });
-  if (refreshError) throw refreshError;
-  for (const load of refreshed || []) {
-    const outcome = (result.results || []).find((item) => Number(item.id) === Number(load.id));
-    const report = outcome?.status === "error"
-      ? { ...load, status: "error", status_note: outcome.error, eta_display: null, miles_left: null }
-      : load;
-    await sendTelegramLoadReport(chatId, report);
+    .order("position", { ascending: true })
+    .order("id", { ascending: true });
+  if (loadsError) throw loadsError;
+  const eligible = (loads || [])
+    .filter((load) => load.status !== "arrived" && load.deadline && (load.truck_number || load.samsara_url))
+    .map((load) => ({ ...load, id: Number(load.id) }))
+    .filter((load) => Number.isSafeInteger(load.id) && load.id > 0);
+  const label = (load) => load.load_number
+    ? `#${String(load.load_number).replace(/\s+/g, " ").slice(0, 24)}`
+    : Number.isInteger(load.position) ? `row ${load.position + 1}` : "load";
+
+  let selected = eligible;
+  let keyboard = updateAllKeyboard();
+  let skipped = 0;
+  if (groupNumber != null) {
+    const { data: snapshot, error: snapshotError } = await supabase
+      .from("telegram_update_batches")
+      .select("groups")
+      .eq("user_id", profile.id)
+      .maybeSingle();
+    if (snapshotError) {
+      console.error("Could not read Telegram groups:", snapshotError.code, snapshotError.message);
+      await sendTelegramMessage(chatId, "Could not read the update groups. Check the database migration and try Update all again.", { reply_markup: updateAllKeyboard() });
+      return;
+    }
+    const groups = snapshot?.groups;
+    if (!Array.isArray(groups) || groupNumber < 1 || !Array.isArray(groups[groupNumber - 1])) {
+      await sendTelegramMessage(chatId, "These groups are no longer available. Tap Update all to make a new set.", { reply_markup: updateAllKeyboard() });
+      return;
+    }
+    const groupIds = groups[groupNumber - 1];
+    if (groupIds.length > TELEGRAM_GROUP_SIZE || groupIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+      await sendTelegramMessage(chatId, "These groups are invalid. Tap Update all to make a new set.", { reply_markup: updateAllKeyboard() });
+      return;
+    }
+    keyboard = telegramGroupKeyboard(groups.length);
+    selected = eligible.filter((load) => groupIds.includes(load.id));
+    skipped = groupIds.length - selected.length;
+  } else {
+    const groups = groupTelegramLoads(eligible);
+    const { error: saveError } = await supabase.from("telegram_update_batches").upsert({
+      user_id: profile.id,
+      groups: groups.length > 1 ? groups.map((group) => group.map((load) => load.id)) : [],
+      created_at: new Date().toISOString(),
+    }, { onConflict: "user_id" });
+    if (saveError) {
+      console.error("Could not save Telegram groups:", saveError.code, saveError.message);
+      await sendTelegramMessage(chatId, "Could not create update groups. Check the database migration and try again.", { reply_markup: updateAllKeyboard() });
+      return;
+    }
+    if (groups.length > 1) {
+      const listing = groups.map((group, index) => `Group ${index + 1}: ${group.map(label).join(", ")}`).join("\n");
+      await sendTelegramMessage(chatId, `${eligible.length} active loads are in ${groups.length} groups of up to ${TELEGRAM_GROUP_SIZE}. Tap each group to update it. Tap Update all to refresh the groups.\n\n${listing}`, { reply_markup: telegramGroupKeyboard(groups.length) });
+      return;
+    }
   }
-  if (result.deferred) {
-    await sendTelegramMessage(
-      chatId,
-      `${result.deferred} load${result.deferred === 1 ? " is" : "s are"} still waiting for an update. Send Update all again shortly.`,
-      { reply_markup: updateAllKeyboard() }
-    );
+  if (!selected.length) {
+    await sendTelegramMessage(chatId, skipped
+      ? `${skipped} load${skipped === 1 ? " is" : "s are"} no longer eligible for this group. Tap Update all to refresh the groups.`
+      : "No active loads with a truck number or supported share link need an update.", { reply_markup: keyboard });
+    return;
   }
+
+  const outcomes = await runTelegramBatch(selected, {
+    deadline,
+    async check(id, remaining) {
+      const checkUrl = new URL("/api/check", origin);
+      if (process.env.CHECK_SECRET) checkUrl.searchParams.set("key", process.env.CHECK_SECRET);
+      checkUrl.searchParams.set("load_ids", String(id));
+      const response = await fetch(checkUrl, { cache: "no-store", signal: AbortSignal.timeout(remaining) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      return (result.results || []).find((item) => Number(item.id) === id) || null;
+    },
+    async report(id, outcome) {
+      return deliverTelegramReport(supabase, chatId, id, {
+        error: outcome.status === "error" ? outcome.error : null,
+        userId: profile.id,
+      });
+    },
+  });
+  const unconfirmed = outcomes.filter((item) => item.unconfirmed);
+  const reportUnconfirmed = outcomes.filter((item) => item.reportUnconfirmed);
+  const errors = outcomes.filter((item) => item.outcome?.status === "error");
+  const checked = outcomes.filter((item) => item.outcome).length;
+  const summary = [
+    `${groupNumber == null ? "Update" : `Group ${groupNumber}`}: ${checked} of ${selected.length} loads checked.`,
+    errors.length ? `${errors.length} load${errors.length === 1 ? "" : "s"} reported a tracking error.` : "",
+    unconfirmed.length ? `Not confirmed: ${unconfirmed.map((item) => label(item.load)).join(", ")}. A timed-out check may still be processing; check the website before retrying.` : "",
+    reportUnconfirmed.length ? `Telegram report not confirmed: ${reportUnconfirmed.map((item) => label(item.load)).join(", ")}. Check Telegram before retrying.` : "",
+    skipped ? `${skipped} load${skipped === 1 ? " is" : "s are"} no longer eligible; tap Update all to refresh the groups.` : "",
+    groupNumber != null ? "Tap the next group when ready." : "",
+  ].filter(Boolean).join(" ");
+  await sendTelegramMessage(chatId, summary, { reply_markup: keyboard });
 }
 
 function sameSecret(left, right) {

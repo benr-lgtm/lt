@@ -24,6 +24,11 @@ let geocodeHit = null;
 let geocodeCalls = 0;
 let distance = 100;
 let chargeCalls = 0;
+let leaseAvailable = true;
+let leaseReleases = 0;
+let samsaraConfigured = false;
+let samsaraLookupCalls = 0;
+let shareTimeout = false;
 
 const supabase = {
   from(table) {
@@ -53,17 +58,24 @@ function stub(path, namedExports) {
 }
 stub("../lib/supabase.js", { getSupabase: () => supabase });
 stub("../lib/samsara.js", {
-  getVehicleGpsByName: async () => new Map(), hasSamsaraToken: () => false,
+  getVehicleGpsByName: async () => { samsaraLookupCalls++; return new Map(); },
+  hasSamsaraToken: () => samsaraConfigured,
   normalizeTruck: (value) => String(value), tzFromCoords: () => "America/Chicago",
   localToIso: () => "2026-11-10T18:00:00Z", formatEta: () => "ETA", findStopNear: async () => null,
 });
 stub("../lib/samsaraShare.js", { fetchShareLocation: async () => { throw new Error("Wrong provider"); } });
 stub("../lib/motiveShare.js", {
-  fetchMotiveLocation: async () => ({ lat: 40, lng: -86, formatted: "Test location", speed: 40, fixTimeMs: Date.now() }),
+  fetchMotiveLocation: async () => {
+    if (shareTimeout) throw new DOMException("Aborted", "TimeoutError");
+    return { lat: 40, lng: -86, formatted: "Test location", speed: 40, fixTimeMs: Date.now() };
+  },
 });
 stub("../lib/motiveApi.js", {
   getMotiveVehicleGpsByName: async () => motiveVehicles, hasMotiveConfig: () => true,
-  parseMotiveTruckNumber: (number) => ({ number, explicit: false }),
+  parseMotiveTruckNumber: (number) => ({
+    number: String(number).replace(/^Motive:\s*/i, ""),
+    explicit: /^Motive:/i.test(number),
+  }),
 });
 stub("../lib/shareLink.js", { parseMotiveUrl: () => ({ uuid: "test" }) });
 stub("../lib/maps.js", {
@@ -78,8 +90,33 @@ stub("../lib/scheduler.js", { nextCheckAt: () => null, slackMsFrom: () => 360000
 stub("../lib/billing.js", { chargeForRow: async () => { chargeCalls++; return { charged: false }; } });
 stub("../lib/crypto.js", { decryptSecret: () => null });
 stub("../lib/telegramReport.js", { sendTelegramLoadReport: async () => {} });
+stub("../lib/checkLease.js", {
+  acquireCheckLease: async () => leaseAvailable ? { token: "lease", load } : null,
+  releaseCheckLease: async () => { leaseReleases++; },
+});
 
 const { GET } = await import("../app/api/check/route.js");
+
+test("an explicitly Motive truck does not wait for a Samsara fleet lookup", async () => {
+  const oldSource = load.samsara_url;
+  load.samsara_url = null;
+  load.truck_number = "Motive: 123";
+  samsaraConfigured = true;
+  samsaraLookupCalls = 0;
+  motiveVehicles = new Map([["123", { name: "123", lat: 40, lng: -86 }]]);
+  try {
+    const url = new URL("https://example.test/api/check?load_ids=1");
+    if (process.env.CHECK_SECRET) url.searchParams.set("key", process.env.CHECK_SECRET);
+    const result = await (await GET({ url: url.href })).json();
+    assert.equal(samsaraLookupCalls, 0);
+    assert.notEqual(result.results[0].status, "error");
+  } finally {
+    load.samsara_url = oldSource;
+    load.truck_number = null;
+    samsaraConfigured = false;
+    motiveVehicles = new Map();
+  }
+});
 
 test("manual Motive check returns success only after saving the GPS result", async () => {
   writeError = null;
@@ -105,6 +142,19 @@ test("manual Motive check reports a database error instead of false success", as
     assert.match(result.results[0].error, /database error 23514/);
   } finally {
     console.error = oldError;
+  }
+});
+
+test("a Motive share timeout identifies the failing stage", async () => {
+  writeError = null;
+  shareTimeout = true;
+  try {
+    const url = new URL("https://example.test/api/check?load_ids=1");
+    if (process.env.CHECK_SECRET) url.searchParams.set("key", process.env.CHECK_SECRET);
+    const result = await (await GET({ url: url.href })).json();
+    assert.match(result.results[0].error, /Motive share location timed out/);
+  } finally {
+    shareTimeout = false;
   }
 });
 
@@ -169,6 +219,19 @@ test("legacy point cache for an unnumbered address is rechecked", async () => {
   assert.equal(chargeCalls, 0);
   load.destination = "1 Test St";
   distance = 100;
+});
+
+test("overlapping load checks are deferred without tracking or releasing another lease", async () => {
+  leaseAvailable = false;
+  geocodeCalls = 0;
+  leaseReleases = 0;
+  const url = new URL("https://example.test/api/check?load_ids=1");
+  if (process.env.CHECK_SECRET) url.searchParams.set("key", process.env.CHECK_SECRET);
+  const result = await (await GET({ url: url.href })).json();
+  assert.equal(result.results[0].status, "deferred");
+  assert.equal(geocodeCalls, 0);
+  assert.equal(leaseReleases, 0);
+  leaseAvailable = true;
 });
 
 test("ambiguous numeric Motive truck lookup returns selectable candidates", async () => {

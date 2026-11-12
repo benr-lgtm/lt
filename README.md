@@ -25,7 +25,16 @@ New rows start with Track off. Motion is based on reported vehicle speed or the
 provider's movement state, and old readings are marked stale. Clearing a row
 removes it from the active board and reports while retaining it in History.
 Each saved row also has an **Update** button on the far left for a one-time
-check of that row. Telegram reports are copyable monospace and omit ETAs.
+check of that row. Update all checks eligible rows one at a time, including
+those with Track off, and reports progress and unconfirmed results. Keep the
+page open until the update finishes; a timed-out row may still be processing,
+so check its status before trying it again. Telegram reports are copyable
+monospace and omit ETAs.
+In Telegram, Update all checks up to three loads directly. For more loads it
+creates numbered groups of up to three; tap each group to update it. Tap Update
+all again to refresh the groups after adding, removing, or completing loads.
+Each group reports unconfirmed checks and Telegram deliveries; a timed-out
+check may still be processing, so check the website before retrying.
 Arrival times displayed are detected from GPS samples or manual check-in, not
 necessarily the exact time the truck reached the facility.
 
@@ -33,6 +42,16 @@ Run [`supabase-tracking-migration.sql`](./supabase-tracking-migration.sql) in th
 Supabase SQL editor to add the tracking toggle, motion fields, and safe
 compaction function. Existing rows stay tracked; newly inserted rows default to
 Track off.
+
+Run [`supabase-check-lease-migration.sql`](./supabase-check-lease-migration.sql)
+before deploying the update reliability changes. It adds a per-load check lease
+to prevent overlapping workers; a crashed worker's lease expires after five
+minutes. It also creates a private table for Telegram group snapshots. Re-run
+the migration if it was applied before Telegram groups were added. Manual
+Telegram reports and scheduled status reports also share the lease. A delivery
+whose network response or state save fails can still have reached Telegram;
+check before retrying to avoid duplicate messages. Tracking reports an error if
+the migration has not been applied.
 
 Motive's public share endpoint is used read-only. Its web-share key is publicly
 embedded in Motive's tracking client; `MOTIVE_WEB_SHARE_API_KEY` can override it
@@ -333,8 +352,10 @@ Run `npm test` with Node.js 24 to exercise the Motive provider regression tests.
   bounded address variants; a facility name may be used for a street without a
   house number. Explicit ZIP/state conflicts are rejected. A street or
   corroborated city/ZIP match may give estimated mileage, clearly marked on the
-  board and in Telegram, but it never triggers automatic arrival. A locality
+  board, but it never triggers automatic arrival. A locality
   estimate can be far from the facility; provide the full street address.
+  If address searches fail, a corroborated ZIP centroid can be used as an area
+  estimate, not as the exact facility.
   Setting `GOOGLE_MAPS_KEY` enables Google as the final geocoder. New estimates
   are cached; unverified legacy area matches are retried. Previously cached
   exact matches are not reverified until the destination is changed.

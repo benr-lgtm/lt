@@ -1,5 +1,5 @@
 import { getSessionUser, unauthorized } from "../../../../lib/supabaseServer";
-import { sendTelegramLoadReport } from "../../../../lib/telegramReport";
+import { deliverTelegramReport } from "../../../../lib/telegramDelivery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,20 +59,12 @@ export async function POST(req) {
       return Response.json({ checked: 0, deferred: 0, message: "No active loads with a truck number or vehicle share link need an update." });
     }
 
-    const now = new Date().toISOString();
-    const { error: queueError } = await supabase
-      .from("loads")
-      .update({ next_check_at: now })
-      .eq("user_id", user.id)
-      .in("id", ids);
-    if (queueError) throw queueError;
-
     const checkUrl = new URL("/api/check", new URL(req.url).origin);
     if (process.env.CHECK_SECRET) checkUrl.searchParams.set("key", process.env.CHECK_SECRET);
     checkUrl.searchParams.set("load_ids", ids.join(","));
     const response = await fetch(checkUrl, {
       cache: "no-store",
-      signal: AbortSignal.timeout(55000),
+      signal: AbortSignal.timeout(45000),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -83,7 +75,9 @@ export async function POST(req) {
     }
     let telegramSent = 0;
     let telegramError = null;
-    const completedIds = new Set((result.results || []).map((item) => Number(item.id)));
+    const completedIds = new Set((result.results || [])
+      .filter((item) => item.status !== "deferred")
+      .map((item) => Number(item.id)));
     const deferredIds = ids.filter((id) => !completedIds.has(id));
     const updated = (loads || []).filter((load) => completedIds.has(Number(load.id)));
     if (!profile?.telegram_chat_id) {
@@ -101,23 +95,12 @@ export async function POST(req) {
       try {
         for (const load of fresh || []) {
           const outcome = (result.results || []).find((item) => Number(item.id) === Number(load.id));
-          const report = outcome?.status === "error"
-            ? { ...load, status: "error", status_note: outcome.error, eta_display: null, miles_left: null }
-            : load;
-          await sendTelegramLoadReport(profile.telegram_chat_id, report);
+          const delivery = await deliverTelegramReport(supabase, profile.telegram_chat_id, load.id, {
+            error: outcome?.status === "error" ? outcome.error : null,
+            userId: user.id,
+          });
+          if (delivery.busy) throw new Error("Another update is using this load; its Telegram report was not sent.");
           telegramSent++;
-        }
-        const sentAt = new Date();
-        for (const load of fresh || []) {
-          await supabase
-            .from("loads")
-            .update({
-              telegram_pending_status: null,
-              telegram_last_sent_at: sentAt.toISOString(),
-              telegram_next_at: null,
-            })
-            .eq("user_id", user.id)
-            .eq("id", load.id);
         }
       } catch (e) {
         telegramError = e.message || "Telegram could not deliver the update.";
@@ -131,6 +114,9 @@ export async function POST(req) {
       deferred: deferredIds.length,
     });
   } catch (e) {
+    if (e.name === "TimeoutError") {
+      return Response.json({ error: "Update timed out and may still be processing. Check the row before retrying." }, { status: 504 });
+    }
     return Response.json({ error: e.message || "Could not update loads now." }, { status: 500 });
   }
 }
