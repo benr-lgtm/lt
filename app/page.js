@@ -994,9 +994,11 @@ export default function Page() {
                     </td>
                     <td className="col-miles">
                       {typeof r.miles_left === "number" ? (
-                        <span title={r.position_precision === "city" ? "Approximate — city-level position" : ""}>
+                        <span title={r.dest_precision === "street" || r.dest_precision === "area_estimate"
+                          ? "Estimated mileage — destination is approximate; arrival will not auto-detect"
+                          : r.position_precision === "city" ? "Approximate — city-level position" : ""}>
                           {Math.round(r.miles_left)}
-                          {r.position_precision === "city" ? "≈" : ""}
+                          {r.position_precision === "city" || r.dest_precision === "street" || r.dest_precision === "area_estimate" ? "≈" : ""}
                         </span>
                       ) : (
                         <span className="muted">—</span>

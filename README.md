@@ -137,8 +137,9 @@ Alternatively, to configure OAuth (stored tokens are encrypted with
 3. Optionally set `GOOGLE_MAPS_KEY` for the final fallback. Google bills per
    request after its free credit. Both fallback services use car routing and
    cannot guarantee truck restrictions.
-   The checker does not calculate mileage when the destination resolves only to
-   a street or area. Correct the street, city, and ZIP if this warning appears.
+   When a destination resolves only to a street or a corroborated locality,
+   mileage is labelled as an estimate and arrival is not detected automatically.
+   Supply the exact street address to improve accuracy.
    A recent ORS error temporarily pauses further ORS attempts in the same running
    worker while fallbacks continue.
 
@@ -327,13 +328,16 @@ Run `npm test` with Node.js 24 to exercise the Motive provider regression tests.
   works because it's a same-site request.
 - Live Share links can expire (you set an expiry when creating them). An expired
   link shows **Check failed** — repaste a fresh one.
-- **Address accuracy.** When parsing pasted blocks, the app sends only the street
-  + city/state/ZIP to the geocoder (it drops the company name and suite/dock
-  codes), which is what strict geocoders like best. Nominatim, ORS, and optionally
-  Google are tried for an exact match; a result with a different ZIP is rejected.
-  Setting `GOOGLE_MAPS_KEY` enables Google as the final geocoder. Exact matches
-  are cached; approximate and unverified legacy matches are retried. Previously
-  cached exact matches are not reverified until the destination is changed.
+- **Address accuracy.** Dispatch parsing keeps the street and city/state/ZIP;
+  suite and dock codes stay in notes. Nominatim, ORS, and optionally Google try
+  bounded address variants; a facility name may be used for a street without a
+  house number. Explicit ZIP/state conflicts are rejected. A street or
+  corroborated city/ZIP match may give estimated mileage, clearly marked on the
+  board and in Telegram, but it never triggers automatic arrival. A locality
+  estimate can be far from the facility; provide the full street address.
+  Setting `GOOGLE_MAPS_KEY` enables Google as the final geocoder. New estimates
+  are cached; unverified legacy area matches are retried. Previously cached
+  exact matches are not reverified until the destination is changed.
   For directions,
   ORS is primary; Mapbox and then Google are tried if the prior provider fails
   or returns an implausible route. Fallback mileage is non-truck-legal.

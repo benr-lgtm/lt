@@ -72,3 +72,45 @@ test("an incomplete source guess cannot overwrite a complete model address", asy
   assert.equal(stops[0].destination, "42 Main Street, Boston, MA 02108");
   assert.match(stops[0].notes, /Building #200/);
 });
+
+test("preserves a street without inventing a missing house number", async () => {
+  process.env.GROQ_API_KEY = "test";
+  globalThis.fetch = async () => Response.json({ choices: [{ message: { content: JSON.stringify({ loads: [{ stops: [
+    { kind: "delivery", facility: "Home Depot", appointmentAt: "2026-11-12T08:00", destination: "737 River Valley Drive, Saint Louis, MO 63146" },
+  ] }] }) } }] });
+  const input = "DEL: 11/12/2026 0800\nHome Depot\nRiver Valley Drive\nSaint Louis, MO 63146";
+  assert.equal(parseLoads(input)[0].destination, "River Valley Drive, Saint Louis, MO 63146");
+  assert.equal((await parseLoadMessage(input))[0].destination, "River Valley Drive, Saint Louis, MO 63146");
+});
+
+test("extracts address blocks from the supplied dispatch formats", () => {
+  const first = parseLoads(`📍 ***PICKUP*****:** 11/11/2026 6:05 AM
+FEDEX GROUND PACKAGE SYSTEMS,
+12501 NE 40th Street
+Kansas City, MO 64161
+📍 ***DELIVERY*****:** 11/12/2026 Straight Drop
+FEDEX GROUND PACKAGE SYSTEM
+13701 SW Anthony F Sansone SR
+Port Saint Lucie, FL 34987`);
+  assert.equal(first[0].destination, "12501 NE 40th Street, Kansas City, MO 64161");
+  assert.equal(first[1].destination, "13701 SW Anthony F Sansone SR, Port Saint Lucie, FL 34987");
+  assert.equal(first[1].timeAssumed, true);
+
+  const second = parseLoads(`PU: 11/12/26 0705 AM
+FEDEX GROUND PACKAGE SYSTEMS,
+135 COLEMAN BLVD.
+Pooler, GA 31322
+DEL: 11/13/26 1355 or Straight drop
+FEDEX GROUND PACKAGE SYSTEMS,
+8951 Yosemite Street
+Henderson, CO 80640`);
+  assert.equal(second[0].destination, "135 COLEMAN BLVD., Pooler, GA 31322");
+  assert.equal(second[1].destination, "8951 Yosemite Street, Henderson, CO 80640");
+
+  const third = parseLoads(`DEL: 11/12/2026 0800-1600 PM
+Home Depot 3PL MDO #5243
+River Valley Drive
+Saint Louis, MO 63146`);
+  assert.equal(third[0].destination, "River Valley Drive, Saint Louis, MO 63146");
+  assert.equal(third[0].deadline, "2026-11-12T16:00");
+});

@@ -419,7 +419,7 @@ async function checkOne(supabase, load, ctx) {
         patch: {
           status,
           status_note:
-            `Stopped tracking — over ${Math.round(
+            `${destTrusted ? "" : "Approximate destination; miles are estimated and arrival won't auto-detect. "}Stopped tracking — over ${Math.round(
               TRACK_MAX_PAST_DEADLINE_MS / 3600000
             )}h past the alert time with no arrival. Clear the row, or tick check-in to close it.`,
           eta_iso: etaIso,
@@ -454,13 +454,14 @@ async function checkOne(supabase, load, ctx) {
     // A vague destination is the single most misleading state this app can be
     // in — miles and ETA still render, they are just measured from the wrong
     // place — so it gets said plainly on the row rather than buried.
-    let alertNote = destTrusted
+    const destinationNote = destTrusted
       ? null
       : dest.precision === "street"
       ? `Approximate destination — matched the street${
           dest.spanMiles ? ` (${dest.spanMiles.toFixed(1)} mi long)` : ""
         }, not the address. Miles and ETA may be off; arrival won't auto-detect. Add a business name or check the address.`
       : "Approximate destination — matched only the city/area. Miles and ETA may be off; arrival won't auto-detect.";
+    let alertNote = null;
     // alert_enabled is the row's own opt-out; older rows predate the column and
     // read as undefined, which must count as enabled rather than silently off.
     const alertOn = load.alert_enabled !== false;
@@ -513,7 +514,7 @@ async function checkOne(supabase, load, ctx) {
           status === "late" && load.status !== "late"
             ? "late"
             : load.telegram_pending_status ?? null,
-        status_note: alertNote,
+        status_note: [destinationNote, alertNote].filter(Boolean).join(" ") || null,
         alerted,
         eta_iso: etaIso,
         eta_display: formatEta(etaIso, tz),
@@ -660,8 +661,11 @@ async function resolvePosition(load, ctx) {
 // Destination priority: the address the user pasted (geocoded once and cached),
 // then whatever the share link itself carries.
 async function resolveDestination(supabase, load, pos) {
+  const cachedPointIsUsable = load.dest_precision === "point" &&
+    (!load.destination || /^\s*\d+[A-Za-z]?(?:-\d+)?\s/.test(load.destination));
   if (load.dest_lat != null && load.dest_lng != null &&
-      (load.dest_precision === "point" || load.dest_precision === "street" || (!load.destination && !load.dest_precision))) {
+      (cachedPointIsUsable || load.dest_precision === "street" ||
+        load.dest_precision === "area_estimate" || (!load.destination && !load.dest_precision))) {
     return {
       lat: load.dest_lat,
       lng: load.dest_lng,
@@ -671,12 +675,13 @@ async function resolveDestination(supabase, load, pos) {
   }
   if (load.destination) {
     try {
-      const hit = await geocode(load.destination);
-      if (hit && (hit.precision === "point" || hit.precision === "street")) {
+      const hit = await geocode(load.destination, load.name || "");
+      if (hit && (hit.precision === "point" || hit.precision === "street" ||
+          (hit.precision === "area" && hit.estimateAllowed))) {
         return {
           lat: hit.lat,
           lng: hit.lng,
-          precision: hit.precision || "point",
+          precision: hit.precision === "area" ? "area_estimate" : hit.precision,
           spanMiles: hit.spanMiles ?? null,
         };
       }

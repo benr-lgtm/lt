@@ -140,7 +140,10 @@ export async function PUT(req) {
         prev.samsara_url !== samsara_url ||
         prev.destination !== destination ||
         prev.deadline !== deadline ||
-        prev.kind !== kind;
+        prev.kind !== kind ||
+        (prev.name !== name && prev.dest_precision === "area_estimate");
+      const keepDestinationCache = prev && prev.destination === destination &&
+        !(prev.name !== name && prev.dest_precision === "area_estimate");
       const trackingChanged = !prev || prev.tracking_enabled !== tracking_enabled;
 
       // Trackable means "has somewhere to look and something to be late for".
@@ -223,8 +226,10 @@ export async function PUT(req) {
           cycle: prev?.cycle ?? 0,
           motion: prev?.motion ?? null,
           motion_updated_at: prev?.motion_updated_at ?? null,
-          dest_lat: prev && prev.destination === destination ? prev.dest_lat ?? null : null,
-          dest_lng: prev && prev.destination === destination ? prev.dest_lng ?? null : null,
+          dest_lat: keepDestinationCache ? prev.dest_lat ?? null : null,
+          dest_lng: keepDestinationCache ? prev.dest_lng ?? null : null,
+          dest_precision: keepDestinationCache ? prev.dest_precision ?? null : null,
+          dest_span_miles: keepDestinationCache ? prev.dest_span_miles ?? null : null,
         });
       } else {
         Object.assign(row, {
@@ -265,6 +270,8 @@ export async function PUT(req) {
           motion_updated_at: prev.motion_updated_at ?? null,
           dest_lat: prev.dest_lat ?? null,
           dest_lng: prev.dest_lng ?? null,
+          dest_precision: prev.dest_precision ?? null,
+          dest_span_miles: prev.dest_span_miles ?? null,
         });
       }
       if (!tracking_enabled) row.next_check_at = null;

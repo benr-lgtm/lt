@@ -13,7 +13,7 @@ registerHooks({
 
 const load = {
   id: 1, position: 0, user_id: "user", load_number: "123",
-  samsara_url: "motive-share", truck_number: null, destination: "Test",
+  samsara_url: "motive-share", truck_number: null, destination: "1 Test St",
   dest_lat: 41, dest_lng: -87, dest_precision: "point", deadline: "2026-11-10T12:00",
   tracking_enabled: false, status: "unknown",
 };
@@ -22,6 +22,8 @@ let savedPatch;
 let motiveVehicles = new Map();
 let geocodeHit = null;
 let geocodeCalls = 0;
+let distance = 100;
+let chargeCalls = 0;
 
 const supabase = {
   from(table) {
@@ -66,14 +68,14 @@ stub("../lib/motiveApi.js", {
 stub("../lib/shareLink.js", { parseMotiveUrl: () => ({ uuid: "test" }) });
 stub("../lib/maps.js", {
   geocode: async () => { geocodeCalls++; return geocodeHit; }, estimateEta: async () => ({ seconds: 3600, milesLeft: 100, provider: "test" }),
-  haversineMiles: () => 100, ARRIVAL_MILES: 0.1,
+  haversineMiles: () => distance, ARRIVAL_MILES: 0.1,
 });
 stub("../lib/email.js", {
   sendLateEmail: async () => ({}), sendCheckinEmail: async () => ({}),
   sendTrackingLostEmail: async () => ({}), recipientsFor: () => [],
 });
 stub("../lib/scheduler.js", { nextCheckAt: () => null, slackMsFrom: () => 3600000, graceMs: () => 0 });
-stub("../lib/billing.js", { chargeForRow: async () => ({ charged: false }) });
+stub("../lib/billing.js", { chargeForRow: async () => { chargeCalls++; return { charged: false }; } });
 stub("../lib/crypto.js", { decryptSecret: () => null });
 stub("../lib/telegramReport.js", { sendTelegramLoadReport: async () => {} });
 
@@ -121,6 +123,52 @@ test("cached approximate destination is retried and cannot produce misleading mi
   assert.equal(savedPatch.eta_display, null);
   load.dest_precision = "point";
   delete load.miles_left;
+});
+
+test("validated area estimate is cached, warned, and never auto-arrives", async () => {
+  writeError = null;
+  load.dest_lat = null;
+  load.dest_lng = null;
+  load.dest_precision = null;
+  geocodeCalls = 0;
+  geocodeHit = { lat: 40, lng: -86, precision: "area", estimateAllowed: true };
+  distance = 0;
+  chargeCalls = 0;
+  const url = new URL("https://example.test/api/check?load_ids=1");
+  if (process.env.CHECK_SECRET) url.searchParams.set("key", process.env.CHECK_SECRET);
+  const result = await (await GET({ url: url.href })).json();
+  assert.notEqual(result.results[0].status, "arrived");
+  assert.equal(chargeCalls, 0);
+  assert.equal(savedPatch.dest_precision, "area_estimate");
+  assert.match(savedPatch.status_note, /Approximate destination/);
+  assert.equal(savedPatch.miles_left, 100);
+  load.dest_lat = savedPatch.dest_lat;
+  load.dest_lng = savedPatch.dest_lng;
+  load.dest_precision = savedPatch.dest_precision;
+  await GET({ url: url.href });
+  assert.equal(geocodeCalls, 1);
+  load.dest_lat = 41;
+  load.dest_lng = -87;
+  load.dest_precision = "point";
+  distance = 100;
+});
+
+test("legacy point cache for an unnumbered address is rechecked", async () => {
+  load.destination = "River Valley Drive, Saint Louis, MO 63146";
+  load.dest_precision = "point";
+  geocodeCalls = 0;
+  geocodeHit = { lat: 40, lng: -86, precision: "area", estimateAllowed: true };
+  distance = 0;
+  chargeCalls = 0;
+  const url = new URL("https://example.test/api/check?load_ids=1");
+  if (process.env.CHECK_SECRET) url.searchParams.set("key", process.env.CHECK_SECRET);
+  const result = await (await GET({ url: url.href })).json();
+  assert.equal(geocodeCalls, 1);
+  assert.notEqual(result.results[0].status, "arrived");
+  assert.equal(savedPatch.dest_precision, "area_estimate");
+  assert.equal(chargeCalls, 0);
+  load.destination = "1 Test St";
+  distance = 100;
 });
 
 test("ambiguous numeric Motive truck lookup returns selectable candidates", async () => {

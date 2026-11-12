@@ -91,7 +91,7 @@ export async function POST(req) {
     } else if (updated.length) {
       const { data: fresh, error: freshError } = await supabase
         .from("loads")
-        .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at,arrived_at")
+        .select("id,position,name,load_number,kind,status,status_note,eta_display,truck_at,miles_left,motion,motion_updated_at,arrived_at,dest_precision")
         .eq("user_id", user.id)
         .in("id", updated.map((load) => load.id))
         .is("deleted_at", null)
