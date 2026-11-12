@@ -14,12 +14,13 @@ registerHooks({
 const { writeTrackingResult } = await import("../lib/trackingWrite.js");
 const { formatTelegramLoadReport } = await import("../lib/telegramReport.js");
 
-test("Telegram labels estimated destination mileage without adding load status", () => {
+test("Telegram omits destination estimate note and load status", () => {
   const report = formatTelegramLoadReport({
     load_number: "39116646", motion: "Rolling", motion_updated_at: new Date().toISOString(),
     truck_at: "Saint Louis, MO", miles_left: 13, dest_precision: "area_estimate", status: "on_time",
   });
-  assert.match(report, /13 miles left \(estimated; destination approximate, arrival not automatic\)/);
+  assert.match(report, /13 miles left/);
+  assert.doesNotMatch(report, /estimated; destination approximate|arrival not automatic/);
   assert.doesNotMatch(report, /Load status/);
 });
 
